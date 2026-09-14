@@ -1,0 +1,3 @@
+[submodule "breeze-tts"]
+	path = breeze-tts
+	url = https://github.com/breezeblue-ai/breeze-tts.git

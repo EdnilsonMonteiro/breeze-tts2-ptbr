@@ -1,0 +1,6 @@
+# Dependencias do repo de inferencia/UI.
+# O engine (submodulo breeze-tts) ja traz torch/qwen-tts/transformers.
+-r breeze-tts/requirements.txt
+peft>=0.13
+gradio>=5.0
+faster-whisper>=1.0

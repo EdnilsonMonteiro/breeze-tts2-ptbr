@@ -1,0 +1,20 @@
+.env
+.env.*
+!.env.example
+
+venv/
+artifacts/
+outputs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+.idea/
+
+# Artefatos
+*.wav
+*.safetensors
+*.npz
+*.ckpt
+*.pt
+*.pth
