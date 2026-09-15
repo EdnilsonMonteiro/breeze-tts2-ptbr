@@ -669,9 +669,14 @@ def main() -> None:
         return
 
     demo = build_ui()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Os audios sao salvos nos artefatos (fora do cwd); o Gradio exige liberar essas
+    # pastas em allowed_paths, senao ele recusa mover o arquivo para o cache.
+    allowed = sorted({str(OUT_DIR), str(CB.TRAINING), str(CB.ADAPTERS_DIR)})
     demo.queue().launch(
         server_name=args.host, server_port=args.port,
         share=args.share, inbrowser=not args.no_browser,
+        allowed_paths=allowed,
         theme=gr.themes.Soft(
             font=["Segoe UI", "system-ui", "Tahoma", "Verdana", "Arial", "sans-serif"],
             font_mono=["Consolas", "Cascadia Mono", "Courier New", "monospace"],
