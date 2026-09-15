@@ -18,3 +18,6 @@ __pycache__/
 *.ckpt
 *.pt
 *.pth
+
+# Documentacao pessoal (nao publicada)
+docs/tutorial/
