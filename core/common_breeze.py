@@ -74,7 +74,13 @@ def ensure_adapter(repo_id: str | None = None, dest=None) -> Path | None:
         print(f"[setup] baixando adapter {repo_id} -> {target}", flush=True)
         _hf_download(repo_id, target)
     except Exception as exc:  # noqa: BLE001
-        print(f"[setup] (aviso) nao baixei o adapter {repo_id}: {exc}", flush=True)
+        msg = str(exc)
+        if "404" in msg or "Repository Not Found" in msg:
+            print(f"[setup] adapter '{repo_id}' ainda nao esta publicado no Hugging Face; "
+                  "seguindo com os adapters locais. Para desativar o download, deixe "
+                  "PTBR_ADAPTER_REPO vazio no .env.", flush=True)
+        else:
+            print(f"[setup] (aviso) nao baixei o adapter {repo_id}: {msg}", flush=True)
         return None
     return target if (target / "adapter_config.json").is_file() else None
 

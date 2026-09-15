@@ -94,6 +94,22 @@ PTBR_ADAPTER_REPO=EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr
 
 ---
 
+### Usar um adapter local (sem Hugging Face)
+
+Se você já tem o adapter (ex.: seu checkpoint de treino), coloque em
+`<PTBR_ARTIFACTS>/adapters/<nome>/`:
+
+```
+<PTBR_ARTIFACTS>/adapters/Breeze-TTS-2-lora-ptbr/
+├─ adapter_config.json
+└─ adapter_model.safetensors
+```
+
+A UI mostra esse adapter como `hf/Breeze-TTS-2-lora-ptbr` e o download é pulado
+(a pasta já existe). Alternativas: apontar `PTBR_ADAPTERS_DIR` para uma pasta com
+`<run>/checkpoints/<ckpt>/adapter_config.json`, ou deixar `PTBR_ADAPTER_REPO=`
+vazio para não tentar baixar nada.
+
 ## Uso
 
 ### Interface web
