@@ -48,11 +48,16 @@ def main() -> None:
 
     print("[probe] carregando base...", flush=True)
     raw = CB.load_breeze_model("cuda", attn="eager")
-    if args.adapter:
+    adapter = args.adapter
+    if adapter and not Path(adapter).is_dir():
+        _dl = CB.ensure_adapter(repo_id=adapter)
+        if _dl:
+            adapter = str(_dl)
+    if adapter:
         from peft import PeftModel
 
-        raw = PeftModel.from_pretrained(raw, args.adapter)
-        print(f"[probe] adapter: {args.adapter}", flush=True)
+        raw = PeftModel.from_pretrained(raw, adapter)
+        print(f"[probe] adapter: {adapter}", flush=True)
     raw.eval()
     update_generation_config_for_breeze(raw)
     tokenizer = CB.load_text_tokenizer()

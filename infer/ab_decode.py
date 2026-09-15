@@ -50,8 +50,13 @@ def main() -> None:
 
     print(f"[ab] carregando modelo base...", flush=True)
     raw = CB.load_breeze_model("cuda", attn="eager")
-    print(f"[ab] adapter: {args.adapter}", flush=True)
-    model = PeftModel.from_pretrained(raw, args.adapter)
+    adapter = args.adapter
+    if adapter and not Path(adapter).is_dir():
+        _dl = CB.ensure_adapter(repo_id=adapter)
+        if _dl:
+            adapter = str(_dl)
+    print(f"[ab] adapter: {adapter}", flush=True)
+    model = PeftModel.from_pretrained(raw, adapter)
     model.eval()
     tokenizer = CB.load_text_tokenizer()
     audio_tok = CB.load_audio_tokenizer("cuda")

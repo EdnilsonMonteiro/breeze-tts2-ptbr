@@ -74,6 +74,7 @@ _STATE = {
     "raw": None,
     "peft": None,
     "adapters": {},  # nome interno -> caminho
+    "adapter_paths": {},  # label da UI -> caminho absoluto
     "tokenizer": None,
     "audio_tok": None,
     "device": "cuda",
@@ -86,18 +87,25 @@ def _pick_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def list_adapters() -> list[str]:
-    choices = [BASE_LABEL]
+def refresh_adapters() -> list[str]:
+    """Descobre adapters locais (runs/*/checkpoints/*) e baixados do HF (hf/*)."""
+    found: dict[str, str] = {}
     runs = CB.ADAPTERS_DIR
     if runs.is_dir():
-        for run in sorted(runs.iterdir()):
-            ck = run / "checkpoints"
-            if not ck.is_dir():
-                continue
-            for c in sorted(ck.iterdir()):
-                if c.is_dir():
-                    choices.append(f"{run.name}/checkpoints/{c.name}")
-    return choices
+        for ck in sorted(runs.glob("*/checkpoints/*")):
+            if (ck / "adapter_config.json").is_file():
+                found[f"{ck.parent.parent.name}/checkpoints/{ck.name}"] = str(ck)
+    hf = CB.HF_ADAPTERS_DIR
+    if hf.is_dir():
+        for ad in sorted(hf.iterdir()):
+            if (ad / "adapter_config.json").is_file():
+                found[f"hf/{ad.name}"] = str(ad)
+    _STATE["adapter_paths"] = found
+    return [BASE_LABEL, *found.keys()]
+
+
+def list_adapters() -> list[str]:
+    return refresh_adapters()
 
 
 def load_model() -> None:
@@ -132,7 +140,8 @@ def use_adapter(label: str):
             return peft
         return raw
 
-    path = (CB.ADAPTERS_DIR / label).resolve()
+    resolved = _STATE.get("adapter_paths", {}).get(label)
+    path = (Path(resolved) if resolved else (CB.ADAPTERS_DIR / label)).resolve()
     if not path.is_dir():
         raise FileNotFoundError(f"adapter nao encontrado: {path}")
 
@@ -466,7 +475,10 @@ import gradio as gr  # noqa: E402
 def build_ui() -> gr.Blocks:
     adapters = list_adapters()
     _STATE["adapter_choices"] = adapters
-    default_adapter = next((a for a in adapters if "r64_02" in a), adapters[0])
+    default_adapter = next(
+        (a for a in adapters if "r64_02" in a),
+        next((a for a in adapters if a.startswith("hf/")), adapters[0]),
+    )
 
     with gr.Blocks(title="Breeze TTS 2 - LoRA PT-BR") as demo:
         gr.Markdown(
@@ -560,10 +572,12 @@ def build_ui() -> gr.Blocks:
                 )
                 emotion.change(lambda e: EMOTIONS.get(e, ""), inputs=emotion, outputs=instruction)
 
-                adapter = gr.Dropdown(
-                    choices=adapters, value=default_adapter,
-                    label="Adapter LoRA (checkpoint)",
-                )
+                with gr.Row():
+                    adapter = gr.Dropdown(
+                        choices=adapters, value=default_adapter,
+                        label="Adapter LoRA (checkpoint)", scale=4,
+                    )
+                    refresh_btn = gr.Button("Atualizar", scale=1)
 
                 with gr.Accordion("Configuracoes avancadas", open=False):
                     gr.Markdown(
@@ -646,6 +660,7 @@ def build_ui() -> gr.Blocks:
         )
 
         demo.load(lambda: list_adapters(), outputs=[adapter])
+        refresh_btn.click(lambda: gr.update(choices=refresh_adapters()), outputs=[adapter])
 
     return demo
 
@@ -667,6 +682,9 @@ def main() -> None:
         print("SELFTEST OK ->", audio)
         print(info)
         return
+
+    # Primeiro uso: baixa o adapter LoRA do Hugging Face (best-effort).
+    CB.ensure_adapter()
 
     demo = build_ui()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
