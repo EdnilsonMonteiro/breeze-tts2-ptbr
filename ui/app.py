@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import warnings
 from pathlib import Path
 
@@ -69,6 +70,63 @@ EMOTIONS = {
     "Formal / profissional": "Fale de forma formal e profissional.",
     "Personagem infantil": "Fale com voz doce e animada, como em desenho infantil.",
 }
+
+# Apelidos (PT e EN, com/sem acento) aceitos no modo segmentado alem dos nomes
+# completos do EMOTIONS. Ex.: "Sad", "triste", "Alegre", "whisper", "calmo".
+EMOTION_ALIASES = {
+    "neutro": "Neutro / natural", "natural": "Neutro / natural", "normal": "Neutro / natural",
+    "neutral": "Neutro / natural",
+    "alegre": "Alegre / sorrindo", "feliz": "Alegre / sorrindo", "sorrindo": "Alegre / sorrindo",
+    "happy": "Alegre / sorrindo", "joy": "Alegre / sorrindo", "joyful": "Alegre / sorrindo",
+    "empolgado": "Empolgado", "animado": "Empolgado", "excited": "Empolgado",
+    "triste": "Triste / melancolico", "tristeza": "Triste / melancolico",
+    "melancolico": "Triste / melancolico", "sad": "Triste / melancolico",
+    "melancholic": "Triste / melancolico",
+    "raiva": "Raiva / irritado", "irritado": "Raiva / irritado", "bravo": "Raiva / irritado",
+    "angry": "Raiva / irritado", "anger": "Raiva / irritado",
+    "medo": "Medo / apreensivo", "apreensivo": "Medo / apreensivo", "ansioso": "Medo / apreensivo",
+    "scared": "Medo / apreensivo", "afraid": "Medo / apreensivo", "fear": "Medo / apreensivo",
+    "sussurro": "Sussurro", "sussurrando": "Sussurro", "whisper": "Sussurro",
+    "whispering": "Sussurro",
+    "calmo": "Calmo / sereno", "sereno": "Calmo / sereno", "tranquilo": "Calmo / sereno",
+    "calm": "Calmo / sereno",
+    "narrador": "Narrador de audiolivro", "audiolivro": "Narrador de audiolivro",
+    "narrator": "Narrador de audiolivro", "audiobook": "Narrador de audiolivro",
+    "locutor": "Locutor de noticia", "noticia": "Locutor de noticia",
+    "news": "Locutor de noticia", "anchor": "Locutor de noticia",
+    "romantico": "Romantico / sedutor", "sedutor": "Romantico / sedutor",
+    "romantic": "Romantico / sedutor", "seductive": "Romantico / sedutor",
+    "formal": "Formal / profissional", "profissional": "Formal / profissional",
+    "professional": "Formal / profissional",
+    "infantil": "Personagem infantil", "crianca": "Personagem infantil",
+    "child": "Personagem infantil", "kid": "Personagem infantil",
+}
+
+
+def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return " ".join(s.lower().split())
+
+
+_EMO_LOOKUP: dict[str, str] = {}
+for _k, _v in EMOTIONS.items():
+    _EMO_LOOKUP[_norm(_k)] = _v
+for _alias, _k in EMOTION_ALIASES.items():
+    _EMO_LOOKUP.setdefault(_norm(_alias), EMOTIONS[_k])
+
+
+def resolve_emotion(name: str) -> str | None:
+    """Mapeia 'Sad'/'triste'/'Alegre' etc. -> instrucao. None se nao for preset."""
+    n = _norm(name)
+    if not n:
+        return None
+    if n in _EMO_LOOKUP:
+        return _EMO_LOOKUP[n]
+    for key, val in _EMO_LOOKUP.items():  # match parcial: "sad mood", "bem triste"
+        if key in n or n in key:
+            return val
+    return None
 
 _STATE = {
     "raw": None,
@@ -367,7 +425,7 @@ def synthesize(
 def parse_segments(raw: str, default_instruction: str) -> list[tuple[str, str]]:
     """Le o roteiro por linhas. Formato por linha:
 
-        emocao | texto          (emocao = preseti do EMOTIONS ou instrucao livre)
+        emocao | texto          (emocao = preset EMOTIONS, apelido PT/EN, ou instrucao livre)
         texto                   (usa a emocao global)
 
     Linhas vazias sao ignoradas. Retorna [(instruction, text), ...].
@@ -382,7 +440,8 @@ def parse_segments(raw: str, default_instruction: str) -> list[tuple[str, str]]:
             left, right = left.strip(), right.strip()
             if not right:
                 continue
-            instr = EMOTIONS.get(left, left)  # preset OU instrucao livre
+            resolved = resolve_emotion(left)
+            instr = resolved if resolved else left  # preset (PT/EN) OU instrucao livre
         else:
             instr, right = default_instruction, line
         out.append((instr, right))
@@ -548,6 +607,7 @@ def build_ui() -> gr.Blocks:
                         placeholder=(
                             "Neutro / natural | Esta parte eu falo normal.\n"
                             "Alegre / sorrindo | MAS ESSA PARTE EU FALO SUPER ALEGRE!\n"
+                            "sad | e esta aqui bem triste.\n"
                             "Sussurro | e esta aqui bem baixinho.\n"
                             "Fale como um narrador epico | No fim, tudo mudou."
                         ),
@@ -555,9 +615,14 @@ def build_ui() -> gr.Blocks:
                     gap_ms = gr.Slider(0, 600, value=120, step=10,
                                        label="Pausa entre trechos (ms)")
                     gr.Markdown(
-                        "Formato: `emocao | texto`. A emocao pode ser um **preset** "
-                        "(ex.: `Alegre / sorrindo`) ou uma **instrucao livre** "
-                        "(ex.: `gritando de empolgacao`). Sem `|`, usa a emocao global."
+                        "Formato: `emocao | texto` (uma linha por trecho). A emocao pode ser um "
+                        "**preset** do dropdown, um **apelido** PT/EN (ex.: `triste`, `sad`, "
+                        "`alegre`, `happy`, `whisper`, `calmo`) ou uma **instrucao livre** "
+                        "(ex.: `gritando de empolgacao`). Sem `|`, usa a emocao global.\n\n"
+                        "**Importante:** a emocao é dirigida pela *instrucao*. Para ela ter "
+                        "efeito forte, aumente o **CFG scale** (ex.: 3–4) em *Configurações "
+                        "avançadas* — com CFG 1.0 a diferença fica sutil. No modo clonagem, "
+                        "use o *dual-CFG* (`cfg_ins`)."
                     )
 
                 gr.Markdown("### Emocao / estilo")
