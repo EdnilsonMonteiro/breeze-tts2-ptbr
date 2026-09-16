@@ -1,5 +1,9 @@
 # Breeze TTS 2 — PT-BR LoRA (inferência e UI)
 
+> **Official project (upstream):** [**breezeblue-ai/breeze-tts**](https://github.com/breezeblue-ai/breeze-tts)
+> · **Model:** [BreezeBlue/Breeze-TTS-2](https://huggingface.co/BreezeBlue/Breeze-TTS-2)
+> · **Training repo:** [EdnilsonMonteiro/breeze-tts2-ptbr-lora-training](https://github.com/EdnilsonMonteiro/breeze-tts2-ptbr-lora-training)
+
 Repositório de **inferência e interface web** para usar um adaptador **LoRA pt-BR**
 treinado sobre o [Breeze TTS 2](https://github.com/breezeblue-ai/breeze-tts).
 O engine entra como **submódulo pinado** (`breeze-tts/`); o adaptador é aplicado
