@@ -11,7 +11,7 @@ authors:
 version: 0.1.0
 date-released: "2026-09-14"
 license: Apache-2.0
-repository-code: "https://github.com/EdnilsonMonteiro/REPO-B-DEFINIR"
+repository-code: "https://github.com/EdnilsonMonteiro/breeze-tts2-ptbr"
 keywords:
   - text-to-speech
   - LoRA

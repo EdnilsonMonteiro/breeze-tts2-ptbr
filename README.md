@@ -9,6 +9,11 @@ Na **primeira execução**, o programa baixa automaticamente do Hugging Face:
 1. o **modelo base** `BreezeBlue/Breeze-TTS-2`;
 2. o **adapter LoRA** `EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr` (quando publicado).
 
+> **Aviso — o adaptador LoRA ainda NÃO foi publicado.** Não há modelo treinado
+> disponível neste repositório nem no Hugging Face. Este repo traz apenas o
+> **código** de inferência/UI; o download automático do adapter já está pronto
+> para quando ele for liberado (após treinos adicionais).
+
 > **Derived from Breeze TTS 2 by BreezeBlue and licensed for research and
 > non-commercial use only.** Veja `NOTICE` e `breeze-tts/MODEL_LICENSE`.
 > Uso comercial exige licença separada da BreezeBlue.

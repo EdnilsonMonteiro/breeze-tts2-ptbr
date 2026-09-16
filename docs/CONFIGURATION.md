@@ -37,6 +37,10 @@ Na 1ª vez, o programa baixa do Hugging Face:
 2. **Adapter LoRA** → `<PTBR_ARTIFACTS>/adapters/<nome-do-repo>` (best-effort;
    se ainda não existir, segue com o base).
 
+> **O adapter LoRA ainda não foi publicado** no Hugging Face. Enquanto isso, o
+> download falha de forma silenciosa e você deve usar um adapter local
+> (ver abaixo) ou o modelo base.
+
 Se o repo for *gated*, aceite os termos e informe `HF_TOKEN`:
 https://huggingface.co/settings/tokens
 
