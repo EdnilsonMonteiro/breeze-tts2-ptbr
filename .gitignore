@@ -19,5 +19,5 @@ __pycache__/
 *.pt
 *.pth
 
-# Documentacao pessoal (nao publicada)
-docs/tutorial/
+# Arquivos pessoais/locais (espelham a raiz; nao publicados)
+.local/
