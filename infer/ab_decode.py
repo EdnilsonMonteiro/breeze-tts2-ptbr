@@ -48,7 +48,7 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[ab] carregando modelo base...", flush=True)
+    print("[ab] carregando modelo base...", flush=True)
     raw = CB.load_breeze_model("cuda", attn="eager")
     adapter = args.adapter
     if adapter and not Path(adapter).is_dir():

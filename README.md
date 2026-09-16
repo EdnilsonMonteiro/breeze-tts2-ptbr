@@ -160,7 +160,7 @@ breeze-tts/     engine oficial (submódulo pinado em ca632ce)
 core/           paths.py + loaders (e auto-download do base/adapter)
 infer/          clone_voice.py, probe_oov.py, ab_decode.py
 ui/             app.py (Gradio), run.bat
-docs/tutorial/  manual operacional
+docs/           documentacao publica (ver docs/README.md)
 ```
 
 ---

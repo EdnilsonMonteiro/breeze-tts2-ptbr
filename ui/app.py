@@ -16,7 +16,6 @@ dual-CFG, cfg_ref controla a fidelidade a voz e cfg_ins a aderencia a instrucao.
 from __future__ import annotations
 
 import argparse
-import gc
 import logging
 import os
 import re
