@@ -17,5 +17,6 @@ Instalação e visão geral: [`../README.md`](../README.md).
 → [python ui/app.py]  (baixa base+adapter na 1ª vez) → [gerar áudio]
 ```
 
-> **Licença:** pesos e derivados do Breeze TTS 2 são *research/non-commercial*.
-> Veja `../NOTICE` e `../breeze-tts/MODEL_LICENSE`.
+> **Licença:** pesos e derivados do Breeze TTS 2 são *research/non-commercial*
+> (https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE).
+> Veja `../NOTICE`.

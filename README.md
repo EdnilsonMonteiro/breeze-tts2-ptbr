@@ -15,7 +15,8 @@ Na **primeira execução**, o programa baixa automaticamente do Hugging Face:
 > para quando ele for liberado (após treinos adicionais).
 
 > **Derived from Breeze TTS 2 by BreezeBlue and licensed for research and
-> non-commercial use only.** Veja `NOTICE` e `breeze-tts/MODEL_LICENSE`.
+> non-commercial use only.** Veja `NOTICE`; a licença do modelo está em
+> https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE.
 > Uso comercial exige licença separada da BreezeBlue.
 
 ---
@@ -188,6 +189,6 @@ docs/           documentacao publica (ver docs/README.md)
 
 - Código deste repo: Apache-2.0 (`LICENSE`).
 - Pesos e derivados do Breeze TTS 2: **BreezeBlue Research and Non-Commercial**
-  (`breeze-tts/MODEL_LICENSE`). **Sem uso comercial.**
+  (https://huggingface.co/BreezeBlue/Breeze-TTS-2/blob/main/LICENSE). **Sem uso comercial.**
 - Não clone voz de pessoas sem consentimento explícito; não use para enganar,
   impersonar ou qualquer fim proibido. Sem vínculo oficial com a BreezeBlue.
