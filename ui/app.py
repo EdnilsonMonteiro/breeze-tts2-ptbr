@@ -16,6 +16,7 @@ dual-CFG, cfg_ref controla a fidelidade a voz e cfg_ins a aderencia a instrucao.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -163,6 +164,86 @@ def refresh_adapters() -> list[str]:
 
 def list_adapters() -> list[str]:
     return refresh_adapters()
+
+
+# ------------------------------------------------------------------ vozes salvas
+VOICES_PATH = CB.OUT_DIR.parent / "voices.json"
+
+
+def _load_voices() -> dict:
+    if VOICES_PATH.is_file():
+        try:
+            return json.loads(VOICES_PATH.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _save_voices(data: dict) -> None:
+    VOICES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    VOICES_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def save_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
+               temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins):
+    name = (name or "").strip()
+    if not name:
+        raise gr.Error("Informe um nome para a voz.")
+    data = _load_voices()
+    data[name] = {
+        "ref_path": (ref_path or ""), "ref_text": (ref_text or ""), "adapter": adapter_label,
+        "emotion": emotion, "instruction": instruction, "speaker": speaker or "S0",
+        "temperature": float(temperature), "top_k": int(top_k), "top_p": float(top_p),
+        "max_new_tokens": int(max_new), "cfg_scale": float(cfg_scale),
+        "use_dual_cfg": bool(use_dual), "cfg_ref": float(cfg_ref), "cfg_ins": float(cfg_ins),
+    }
+    _save_voices(data)
+    return gr.update(choices=sorted(data), value=name)
+
+
+def load_voice(name):
+    v = _load_voices().get(name, {})
+    return (
+        gr.update(value=v.get("ref_path", "")),
+        gr.update(value=v.get("ref_text", "")),
+        gr.update(value=v.get("adapter")),
+        gr.update(value=v.get("emotion", "Neutro / natural")),
+        gr.update(value=v.get("instruction", EMOTIONS["Neutro / natural"])),
+        gr.update(value=v.get("speaker", "S0")),
+        gr.update(value=v.get("temperature", 0.9)),
+        gr.update(value=v.get("top_k", 50)),
+        gr.update(value=v.get("top_p", 1.0)),
+        gr.update(value=v.get("max_new_tokens", 800)),
+        gr.update(value=v.get("cfg_scale", 1.0)),
+        gr.update(value=v.get("use_dual_cfg", False)),
+        gr.update(value=v.get("cfg_ref", 3.0)),
+        gr.update(value=v.get("cfg_ins", 3.0)),
+    )
+
+
+def delete_voice(name):
+    data = _load_voices()
+    data.pop(name, None)
+    _save_voices(data)
+    return gr.update(choices=sorted(data), value=None), gr.update(value="")
+
+
+def apply_best_config(path):
+    """Aplica os parametros de um best_config.json (do auto-tune)."""
+    p = Path((path or "").strip())
+    if not p.is_file():
+        raise gr.Error(f"arquivo nao encontrado: {p}")
+    cfg = json.loads(p.read_text(encoding="utf-8"))
+    cfg = cfg.get("best_config") or cfg
+    return (
+        gr.update(value=cfg.get("temperature", 0.9)),
+        gr.update(value=cfg.get("top_k", 50)),
+        gr.update(value=cfg.get("top_p", 1.0)),
+        gr.update(value=cfg.get("cfg_scale", 1.0)),
+        gr.update(value=cfg.get("use_dual_cfg", False)),
+        gr.update(value=cfg.get("cfg_ref", 3.0)),
+        gr.update(value=cfg.get("cfg_ins", 3.0)),
+    )
 
 
 def load_model() -> None:
@@ -643,7 +724,49 @@ def build_ui() -> gr.Blocks:
                     )
                     refresh_btn = gr.Button("Atualizar", scale=1)
 
+                with gr.Accordion("Vozes salvas / melhor config", open=False):
+                    with gr.Row():
+                        voice_name = gr.Textbox(label="Nome da voz", placeholder="minha_voz", scale=3)
+                        save_voice_btn = gr.Button("Salvar voz", scale=1)
+                    with gr.Row():
+                        voice_pick = gr.Dropdown(label="Vozes salvas",
+                                                 choices=sorted(_load_voices()), scale=3)
+                        load_voice_btn = gr.Button("Carregar", scale=1)
+                        del_voice_btn = gr.Button("Excluir", scale=1)
+                    with gr.Row():
+                        cfg_path = gr.Textbox(label="best_config.json (auto-tune)", scale=4)
+                        apply_cfg_btn = gr.Button("Aplicar config", scale=1)
+                    gr.Markdown(
+                        "**Salvar voz** grava a referência + a config atual (temperature/CFG/...). "
+                        "**Aplicar config** carrega um `best_config.json` gerado pelo auto-tune "
+                        "(toolbox do repo de treino) nos sliders."
+                    )
+
                 with gr.Accordion("Configuracoes avancadas", open=False):
+                    with gr.Accordion("(i) O que faz cada parametro", open=False):
+                        gr.Markdown(
+                            "- **Temperature** (0,1–1,5): aleatoriedade do sorteio de tokens. "
+                            "Baixa (~0,5–0,7) = mais estável e fiel, menos variada; alta (>1,0) = "
+                            "mais expressiva, porém imprevisível e pode 'perder' a voz. Para "
+                            "clonagem, **0,7** costuma sair melhor.\n"
+                            "- **top_k**: sorteia só entre os K tokens mais prováveis. Menor "
+                            "(20–50) = foco/estabilidade; maior = mais liberdade.\n"
+                            "- **top_p** (nucleus): sorteia do menor conjunto cuja probabilidade "
+                            "soma `p`. `1,0` = desligado; `0,9` = mais foco. Ajuste **top_k ou "
+                            "top_p**, não os dois ao extremo.\n"
+                            "- **CFG scale** (guidance): quanto reforçar a **instrução** (emoção/"
+                            "estilo). `1,0` = sem reforço; `3–4` = forte (recomendado p/ direção).\n"
+                            "- **cfg_ref** (dual-CFG): fidelidade à **voz de referência**. Maior = "
+                            "mais parecido com a referência.\n"
+                            "- **cfg_ins** (dual-CFG): aderência à **instrução** (emoção). Maior = "
+                            "segue mais a emoção.\n"
+                            "- **Seed**: semente do sorteio. Mesma seed + mesmos parâmetros = "
+                            "mesmo áudio. Seeds diferentes mudam a realização — por isso algumas "
+                            "'acertam' mais que outras.\n"
+                            "- **max_new_tokens**: limite de tokens de áudio (~86 tokens ≈ 1 s). "
+                            "Aumente para textos longos.\n"
+                            "- **Speaker id**: tag de locutor; mantenha `S0`."
+                        )
                     gr.Markdown(
                         "**CFG (classifier-free guidance):** `cfg_scale > 1` amplifica a "
                         "aderencia a instrucao (emocao). No modo clonagem, o *dual-CFG* separa "
@@ -725,6 +848,23 @@ def build_ui() -> gr.Blocks:
 
         demo.load(lambda: list_adapters(), outputs=[adapter])
         refresh_btn.click(lambda: gr.update(choices=refresh_adapters()), outputs=[adapter])
+
+        save_voice_btn.click(
+            save_voice,
+            inputs=[voice_name, ref_path, ref_text, adapter, emotion, instruction, speaker,
+                    temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins],
+            outputs=[voice_pick],
+        )
+        load_voice_btn.click(
+            load_voice, inputs=[voice_pick],
+            outputs=[ref_path, ref_text, adapter, emotion, instruction, speaker,
+                     temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins],
+        )
+        del_voice_btn.click(delete_voice, inputs=[voice_pick], outputs=[voice_pick, voice_name])
+        apply_cfg_btn.click(
+            apply_best_config, inputs=[cfg_path],
+            outputs=[temperature, top_k, top_p, cfg_scale, use_dual, cfg_ref, cfg_ins],
+        )
 
     return demo
 
