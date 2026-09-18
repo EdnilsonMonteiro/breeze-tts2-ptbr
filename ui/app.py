@@ -247,6 +247,11 @@ def apply_best_config(path):
     raw = json.loads(p.read_text(encoding="utf-8"))
     cfg = raw.get("best_config") or raw
     best_seed = raw.get("best_seed")
+    seed_val = None
+    if best_seed is not None:
+        m = re.search(r"\d+", str(best_seed))  # aceita 5, "5" ou "seed_005"
+        if m:
+            seed_val = int(m.group())
     return (
         gr.update(value=cfg.get("temperature", 0.9)),
         gr.update(value=cfg.get("top_k", 50)),
@@ -255,7 +260,7 @@ def apply_best_config(path):
         gr.update(value=cfg.get("use_dual_cfg", False)),
         gr.update(value=cfg.get("cfg_ref", 3.0)),
         gr.update(value=cfg.get("cfg_ins", 3.0)),
-        gr.update(value=int(best_seed)) if best_seed else gr.update(),
+        gr.update(value=seed_val) if seed_val is not None else gr.update(),
     )
 
 
