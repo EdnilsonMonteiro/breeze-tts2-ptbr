@@ -4,3 +4,5 @@
 peft>=0.13
 gradio>=5.0
 faster-whisper>=1.0
+speechbrain>=1.0
+librosa>=0.10

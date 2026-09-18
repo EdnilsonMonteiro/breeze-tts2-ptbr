@@ -184,11 +184,10 @@ def _save_voices(data: dict) -> None:
     VOICES_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def save_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
-               temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins):
-    name = (name or "").strip()
-    if not name:
-        raise gr.Error("Informe um nome para a voz.")
+def _persist_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
+                   temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins,
+                   seed=None) -> str:
+    name = (name or "").strip() or (Path(ref_path).stem if ref_path else "voz") or "voz"
     data = _load_voices()
     data[name] = {
         "ref_path": (ref_path or ""), "ref_text": (ref_text or ""), "adapter": adapter_label,
@@ -196,9 +195,20 @@ def save_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, sp
         "temperature": float(temperature), "top_k": int(top_k), "top_p": float(top_p),
         "max_new_tokens": int(max_new), "cfg_scale": float(cfg_scale),
         "use_dual_cfg": bool(use_dual), "cfg_ref": float(cfg_ref), "cfg_ins": float(cfg_ins),
+        "seed": int(seed) if seed is not None else None,
     }
     _save_voices(data)
-    return gr.update(choices=sorted(data), value=name)
+    return name
+
+
+def save_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
+               temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed):
+    name = (name or "").strip()
+    if not name:
+        raise gr.Error("Informe um nome para a voz.")
+    _persist_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
+                   temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed)
+    return gr.update(choices=sorted(_load_voices()), value=name)
 
 
 def load_voice(name):
@@ -218,6 +228,7 @@ def load_voice(name):
         gr.update(value=v.get("use_dual_cfg", False)),
         gr.update(value=v.get("cfg_ref", 3.0)),
         gr.update(value=v.get("cfg_ins", 3.0)),
+        gr.update(value=v.get("seed") if v.get("seed") is not None else 42),
     )
 
 
@@ -246,6 +257,39 @@ def apply_best_config(path):
         gr.update(value=cfg.get("cfg_ins", 3.0)),
         gr.update(value=int(best_seed)) if best_seed else gr.update(),
     )
+
+
+def auto_select_seed(ref_audio, ref_text, adapter_label, text, instruction, speaker,
+                     temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins,
+                     n_seeds=10):
+    """Gera N seeds para a referencia atual, escolhe a de maior cos(ECAPA) e salva.
+
+    Retorna (best_seed, best_cos, best_path, [(seed, cos, path), ...]).
+    """
+    import numpy as np
+
+    if not (ref_audio and (ref_text or "").strip()):
+        raise gr.Error("A auto-selecao exige referencia + transcricao.")
+    ref_emb = CB.speaker_embed(ref_audio)
+    out_dir = CB.OUT_DIR / "auto_seed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results = []
+    best = None
+    for s in range(1, int(n_seeds) + 1):
+        wav, sr = _generate(
+            text=text, instruction=instruction, ref_audio=ref_audio, ref_text=ref_text,
+            adapter_label=adapter_label, speaker=speaker, seed=s, temperature=temperature,
+            top_k=top_k, top_p=top_p, max_new_tokens=max_new, cfg_scale=cfg_scale,
+            use_dual_cfg=use_dual, cfg_ref=cfg_ref, cfg_ins=cfg_ins,
+        )
+        p = out_dir / f"seed_{s:03d}.wav"
+        sf.write(str(p), np.clip(wav, -1.0, 1.0), int(sr), subtype="PCM_16")
+        c = CB.cos(ref_emb, CB.speaker_embed(p))
+        results.append((s, c, str(p)))
+        print(f"[auto-seed] seed {s}: cos={c:.3f}", flush=True)
+        if best is None or c > best[1]:
+            best = (s, c, str(p))
+    return best[0], best[1], best[2], results
 
 
 def load_model() -> None:
@@ -740,12 +784,20 @@ def build_ui() -> gr.Blocks:
                         load_voice_btn = gr.Button("Carregar", scale=1)
                         del_voice_btn = gr.Button("Excluir", scale=1)
                     with gr.Row():
+                        auto_on = gr.Checkbox(
+                            value=False, scale=3,
+                            label="Auto-selecionar melhor seed na 1ª geração (lento)",
+                            info="Gera N seeds com a referência, escolhe a de maior similaridade "
+                                 "(ECAPA) e salva a voz com essa seed.")
+                        auto_n = gr.Number(value=10, precision=0, label="nº de seeds", scale=1)
+                    with gr.Row():
                         cfg_path = gr.Textbox(label="best_config.json (auto-tune)", scale=4)
                         apply_cfg_btn = gr.Button("Aplicar config", scale=1)
                     gr.Markdown(
-                        "**Salvar voz** grava a referência + a config atual (temperature/CFG/...). "
-                        "**Aplicar config** carrega um `best_config.json` gerado pelo auto-tune "
-                        "(toolbox do repo de treino) nos sliders."
+                        "**Salvar voz** grava a referência + a config atual (temperature/CFG/seed). "
+                        "**Auto-selecionar** (checkbox) roda N seeds na 1ª geração, escolhe a melhor "
+                        "e salva a voz automaticamente. **Aplicar config** carrega um "
+                        "`best_config.json` do auto-tune."
                     )
 
                 with gr.Accordion("Configuracoes avancadas", open=False):
@@ -831,8 +883,33 @@ def build_ui() -> gr.Blocks:
 
         def _run(text_, script_, gap_, modo_seg_, emotion_, instruction_, ref_audio_, ref_path_,
                  ref_text_, adapter_, speaker_, seed_, temperature_, top_k_, top_p_, max_new_,
-                 cfg_scale_, use_dual_, cfg_ref_, cfg_ins_, pause_on_, pause_ms_):
+                 cfg_scale_, use_dual_, cfg_ref_, cfg_ins_, pause_on_, pause_ms_,
+                 auto_on_, auto_n_, voice_name_):
             ref = ref_path_.strip() if (ref_path_ and ref_path_.strip()) else ref_audio_
+            has_ref = bool(ref) and bool((ref_text_ or "").strip())
+
+            # auto-selecao de seed (so no modo simples, com referencia)
+            if auto_on_ and has_ref and not modo_seg_:
+                try:
+                    best_s, best_c, best_p, results = auto_select_seed(
+                        ref_audio=ref, ref_text=ref_text_, adapter_label=adapter_, text=text_,
+                        instruction=(instruction_ or "").strip() or EMOTIONS.get(
+                            emotion_, EMOTIONS["Neutro / natural"]),
+                        speaker=speaker_, temperature=temperature_, top_k=top_k_, top_p=top_p_,
+                        max_new=max_new_, cfg_scale=cfg_scale_, use_dual=use_dual_,
+                        cfg_ref=cfg_ref_, cfg_ins=cfg_ins_, n_seeds=int(auto_n_ or 10))
+                except Exception as exc:  # noqa: BLE001
+                    raise gr.Error(f"Auto-seed falhou: {exc}") from exc
+                vname = _persist_voice(
+                    voice_name_, ref, ref_text_, adapter_, emotion_, instruction_, speaker_,
+                    temperature_, top_k_, top_p_, max_new_, cfg_scale_, use_dual_,
+                    cfg_ref_, cfg_ins_, seed=best_s)
+                rank = "  ".join(f"{s}:{c:.3f}" for s, c, _ in results)
+                info = (f"**Auto-seed:** {len(results)} seeds testadas; melhor = **{best_s}** "
+                        f"(cos={best_c:.3f}). Voz salva como `{vname}`.  \n"
+                        f"cos por seed -> {rank}  \n**Arquivo:** `{best_p}`")
+                return best_p, info, gr.update(value=int(best_s))
+
             common = dict(
                 emotion=emotion_, instruction_custom=instruction_, ref_audio=ref,
                 ref_text=ref_text_, adapter_label=adapter_, speaker=speaker_, seed=seed_,
@@ -841,15 +918,19 @@ def build_ui() -> gr.Blocks:
                 cfg_ref=cfg_ref_, cfg_ins=cfg_ins_,
             )
             if modo_seg_:
-                return synthesize_segments(script=script_, gap_ms=int(gap_), **common)
-            return synthesize(text=text_, pause_on=pause_on_, pause_ms=int(pause_ms_), **common)
+                audio, info = synthesize_segments(script=script_, gap_ms=int(gap_), **common)
+            else:
+                audio, info = synthesize(text=text_, pause_on=pause_on_,
+                                         pause_ms=int(pause_ms_), **common)
+            return audio, info, gr.update()
 
         btn.click(
             _run,
             inputs=[text, script, gap_ms, modo_seg, emotion, instruction, ref_audio, ref_path,
                     ref_text, adapter, speaker, seed, temperature, top_k, top_p, max_new,
-                    cfg_scale, use_dual, cfg_ref, cfg_ins, pause_on, pause_ms],
-            outputs=[out_audio, out_info],
+                    cfg_scale, use_dual, cfg_ref, cfg_ins, pause_on, pause_ms,
+                    auto_on, auto_n, voice_name],
+            outputs=[out_audio, out_info, seed],
         )
 
         demo.load(lambda: list_adapters(), outputs=[adapter])
@@ -858,13 +939,14 @@ def build_ui() -> gr.Blocks:
         save_voice_btn.click(
             save_voice,
             inputs=[voice_name, ref_path, ref_text, adapter, emotion, instruction, speaker,
-                    temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins],
+                    temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed],
             outputs=[voice_pick],
         )
         load_voice_btn.click(
             load_voice, inputs=[voice_pick],
             outputs=[ref_path, ref_text, adapter, emotion, instruction, speaker,
-                     temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins],
+                     temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins,
+                     seed],
         )
         del_voice_btn.click(delete_voice, inputs=[voice_pick], outputs=[voice_pick, voice_name])
         apply_cfg_btn.click(

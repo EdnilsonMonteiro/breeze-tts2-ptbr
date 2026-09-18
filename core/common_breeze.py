@@ -221,3 +221,43 @@ def cache_reference(audio_tok, wav_path, cache_dir=None):
 
 def cached_reference(wav_path):
     return _code_cache.get(str(Path(wav_path)))
+
+
+# --------------------------------------------- similaridade de locutor (ECAPA)
+_ecapa = None
+
+
+def _load_ecapa(device: str = "cpu"):
+    global _ecapa
+    if _ecapa is None:
+        try:
+            from speechbrain.inference.speaker import EncoderClassifier
+        except Exception:  # noqa: BLE001
+            from speechbrain.pretrained import EncoderClassifier
+        _ecapa = EncoderClassifier.from_hparams(
+            source="speechbrain/spkrec-ecapa-voxceleb",
+            savedir=str(paths.ARTIFACTS / "voice_cache" / "spkrec-ecapa"),
+            run_opts={"device": device},
+        )
+    return _ecapa
+
+
+def speaker_embed(wav_path, device: str = "cpu"):
+    """Embedding ECAPA (cos) de um WAV/array — usado para escolher a melhor seed."""
+    import librosa
+    import numpy as np
+    import torch
+
+    clf = _load_ecapa(device)
+    wav, _sr = librosa.load(str(wav_path), sr=16000, mono=True)
+    x = torch.from_numpy(np.asarray(wav, dtype=np.float32)).unsqueeze(0).to(device)
+    with torch.no_grad():
+        e = clf.encode_batch(x).squeeze()
+    e = e / (e.norm() + 1e-9)
+    return e.detach().cpu().numpy().astype(np.float32)
+
+
+def cos(a, b) -> float:
+    import numpy as np
+
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
