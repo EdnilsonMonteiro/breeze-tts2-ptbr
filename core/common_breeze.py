@@ -73,6 +73,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 ROOT = paths.REPO
+ARTIFACTS = paths.ARTIFACTS
 CKPT = paths.CKPT
 TRAINING = paths.TRAINING
 ADAPTERS_DIR = paths.ADAPTERS_DIR

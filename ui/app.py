@@ -167,7 +167,7 @@ def list_adapters() -> list[str]:
 
 
 # ------------------------------------------------------------------ vozes salvas
-VOICES_PATH = CB.OUT_DIR.parent / "voices.json"
+VOICES_PATH = CB.ARTIFACTS / "voices.json"
 
 
 def _load_voices() -> dict:
@@ -939,6 +939,7 @@ def build_ui() -> gr.Blocks:
         )
 
         demo.load(lambda: list_adapters(), outputs=[adapter])
+        demo.load(lambda: gr.update(choices=sorted(_load_voices())), outputs=[voice_pick])
         refresh_btn.click(lambda: gr.update(choices=refresh_adapters()), outputs=[adapter])
 
         save_voice_btn.click(
