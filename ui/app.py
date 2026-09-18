@@ -233,8 +233,9 @@ def apply_best_config(path):
     p = Path((path or "").strip())
     if not p.is_file():
         raise gr.Error(f"arquivo nao encontrado: {p}")
-    cfg = json.loads(p.read_text(encoding="utf-8"))
-    cfg = cfg.get("best_config") or cfg
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    cfg = raw.get("best_config") or raw
+    best_seed = raw.get("best_seed")
     return (
         gr.update(value=cfg.get("temperature", 0.9)),
         gr.update(value=cfg.get("top_k", 50)),
@@ -243,6 +244,7 @@ def apply_best_config(path):
         gr.update(value=cfg.get("use_dual_cfg", False)),
         gr.update(value=cfg.get("cfg_ref", 3.0)),
         gr.update(value=cfg.get("cfg_ins", 3.0)),
+        gr.update(value=int(best_seed)) if best_seed else gr.update(),
     )
 
 
@@ -867,7 +869,7 @@ def build_ui() -> gr.Blocks:
         del_voice_btn.click(delete_voice, inputs=[voice_pick], outputs=[voice_pick, voice_name])
         apply_cfg_btn.click(
             apply_best_config, inputs=[cfg_path],
-            outputs=[temperature, top_k, top_p, cfg_scale, use_dual, cfg_ref, cfg_ins],
+            outputs=[temperature, top_k, top_p, cfg_scale, use_dual, cfg_ref, cfg_ins, seed],
         )
 
     return demo
