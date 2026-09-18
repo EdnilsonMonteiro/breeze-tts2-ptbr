@@ -6,6 +6,7 @@ submódulo `breeze-tts/` (paths.BREEZE_REPO), que e adicionado ao sys.path.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import logging
 import sys
@@ -156,3 +157,67 @@ def load_breeze_model(device: str = "cuda", attn: str = "eager"):
         CKPT, dtype=torch.bfloat16, attn_implementation=attn
     )
     return model.to(device).eval()
+
+
+# ---------------------------------------------------- cache de codes da referencia
+# O Breeze nao tem embedding de falante puro: a voz vem dos codes do codec da
+# referencia + transcript. Codificamos a referencia UMA vez e reutilizamos os
+# codes (equivalente ao .breeze do breeze-cli): pula o encode e garante codes
+# identicos a cada geracao. Cache em memoria + .npz persistente.
+_code_cache: dict[str, "object"] = {}
+_orig_encode_prompt_audio = None
+
+
+def enable_code_cache() -> None:
+    """Patch em breeze_infer.templates._encode_prompt_audio para usar o cache."""
+    global _orig_encode_prompt_audio
+    if _orig_encode_prompt_audio is not None:
+        return
+    import breeze_infer.templates as T
+
+    def _patched(audio_tokenizer, audio_path):
+        hit = _code_cache.get(str(Path(audio_path)))
+        if hit is not None:
+            return hit.clone()
+        return _orig_encode_prompt_audio(audio_tokenizer, audio_path)
+
+    _orig_encode_prompt_audio = T._encode_prompt_audio
+    T._encode_prompt_audio = _patched
+
+
+def _codes_npz(wav_path, cache_dir=None) -> Path:
+    d = Path(cache_dir) if cache_dir else (paths.ARTIFACTS / "voice_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(str(Path(wav_path).resolve()).encode("utf-8")).hexdigest()[:16]
+    return d / f"{key}.npz"
+
+
+def reference_codes_path(wav_path, cache_dir=None) -> Path:
+    return _codes_npz(wav_path, cache_dir)
+
+
+def cache_reference(audio_tok, wav_path, cache_dir=None):
+    """Codifica a referencia 1x (npz persistente) e registra no cache. Retorna o tensor."""
+    import numpy as np
+    import torch
+
+    enable_code_cache()
+    key = str(Path(wav_path))
+    if key in _code_cache:
+        return _code_cache[key]
+
+    npz = _codes_npz(wav_path, cache_dir)
+    if npz.is_file():
+        arr = np.load(npz)["codes"]
+    else:
+        from breeze_infer.audio import encode_prompt_audio
+
+        codes = encode_prompt_audio(audio_tok, str(wav_path))
+        arr = codes.numpy().astype(np.int16)
+        np.savez_compressed(npz, codes=arr)
+    _code_cache[key] = torch.from_numpy(np.ascontiguousarray(arr))
+    return _code_cache[key]
+
+
+def cached_reference(wav_path):
+    return _code_cache.get(str(Path(wav_path)))

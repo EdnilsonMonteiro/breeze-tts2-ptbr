@@ -343,6 +343,10 @@ def _generate(
         request["ref_audio_path"] = str(ref_audio)
         request["ref_text"] = ref_text.strip()
         template = "ref_edit_tata"
+        try:
+            CB.cache_reference(audio_tok, ref_audio)  # codifica a referencia 1x
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ui] (aviso) cache da referencia falhou: {exc}", flush=True)
     else:
         template = "tts_instruction"
 
