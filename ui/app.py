@@ -297,18 +297,22 @@ def use_adapter(label: str):
     return peft
 
 
-def _set_adapter_scale(model, scale: float) -> None:
-    """Ajusta a escala do adapter LoRA em inferencia.
+def _set_adapter_scale(model, factor: float) -> None:
+    """Multiplica a escala TREINADA do LoRA por `factor` (1.0 = como treinado).
 
-    Escala treinada = alpha/r (padrao) ou alpha/sqrt(r) (rsLoRA). Rodar com
-    scale < 1.0 atenua o "over-steering" do adapter sem retreinar (0.3-1.0).
+    O adapter foi treinado com rsLoRA (alpha/sqrt(r)); `factor<1.0` atenua
+    (ex.: 0.5 reduz de 8.0 para 4.0). `factor=1.0` mantem a escala treinada.
     """
     try:
         for m in model.modules():
             sc = getattr(m, "scaling", None)
-            if isinstance(sc, dict):
-                for k in list(sc):
-                    sc[k] = float(scale)
+            if isinstance(sc, dict) and sc:
+                base = getattr(m, "_ptbr_base_scaling", None)
+                if base is None:
+                    base = dict(sc)
+                    m._ptbr_base_scaling = base
+                for k, v in base.items():
+                    sc[k] = float(v) * float(factor)
     except Exception:  # noqa: BLE001
         pass
 
@@ -805,7 +809,7 @@ def build_ui() -> gr.Blocks:
                         top_p = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="top_p")
                     adapter_scale = gr.Slider(
                         0.3, 1.0, value=1.0, step=0.05,
-                        label="Escala do adapter (1.0 = treinada; menor atenua over-steering)",
+                        label="Escala do adapter (1.0 = treinada; <1.0 atenua)",
                     )
                     gr.Markdown(
                         "Dica: o texto de referencia deve ser a transcricao **exata** do audio. "
