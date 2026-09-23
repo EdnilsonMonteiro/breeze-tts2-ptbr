@@ -48,6 +48,7 @@ if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 
 import common_breeze as CB  # noqa: E402
+import text_norm as TN  # noqa: E402
 import soundfile as sf  # noqa: E402
 import torch  # noqa: E402
 
@@ -341,6 +342,7 @@ def _generate(
     adapter_scale: float = 1.0,
 ) -> tuple[np.ndarray, int]:
     """Gera UMA locucao (uma instrucao global). Retorna (wav float32, sample_rate)."""
+    text = TN.normalize(text)  # numeros por extenso (o modelo fala melhor)
     has_ref = bool(ref_audio) and bool((ref_text or "").strip())
     model = use_adapter(adapter_label)
     _set_adapter_scale(model, adapter_scale)
