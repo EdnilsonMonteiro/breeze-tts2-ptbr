@@ -6,3 +6,4 @@ gradio>=5.0
 faster-whisper>=1.0
 speechbrain>=1.0
 librosa>=0.10
+num2words>=0.5

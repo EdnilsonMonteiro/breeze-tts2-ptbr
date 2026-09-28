@@ -138,7 +138,11 @@ Recursos da UI:
 - Geração **sem referência** (voz padrão + instrução);
 - **Emoção/estilo** por *system prompt* e **CFG** (simples ou dual);
 - **Modo segmentado** (emoção por frase) e **ajuste de pausas**;
-- Escolha do **adapter LoRA** (lista os locais e os baixados; botão *Atualizar*).
+- Escolha do **adapter LoRA** (lista os locais e os baixados; botão *Atualizar*);
+- **Escala do adapter (multiplicador)**: `1,0` = como treinado. Valores `< 1,0`
+  **pioram** o resultado — o adapter da receita v2 (escala de treino 4,0) **não**
+  está "over-steering". Detalhes e números em
+  [ESTRATEGIA-PTBR.md](https://github.com/EdnilsonMonteiro/breeze-tts2-ptbr-lora-training/blob/main/docs/ESTRATEGIA-PTBR.md).
 
 Na primeira geração o modelo é carregado (baixa na 1ª vez e leva ~1 min depois).
 
