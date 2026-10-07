@@ -54,5 +54,5 @@ BREEZE_PY = os.environ.get("BREEZE_PY") or sys.executable
 # Repos do Hugging Face usados no primeiro uso (auto-download).
 # Troque PTBR_ADAPTER_REPO pelo seu repo quando publicar o adapter.
 BASE_MODEL_REPO = os.environ.get("BREEZE_BASE_MODEL_REPO", "BreezeBlue/Breeze-TTS-2")
-ADAPTER_REPO = os.environ.get("PTBR_ADAPTER_REPO", "EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr")
+ADAPTER_REPO = os.environ.get("PTBR_ADAPTER_REPO", "EdnilsonMonts/Breeze-tts-2-brazillian-lora")
 HF_TOKEN = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")

@@ -13,7 +13,7 @@ Windows também: duplo-clique em `ui/run.bat`.
 
 ### Recursos
 
-- **Clonagem** (com referência): envie/indique um áudio limpo (3–30 s) e a
+- **Clonagem** (com referência): envie/indique um áudio limpo (**3–10 s** — o treino não viu clipes maiores) e a
   **transcrição exata**. O modelo gera o texto-alvo no timbre da referência.
 - **Sem referência**: voz padrão do modelo + instrução de estilo.
 - **Emoção/estilo**: presets ou instrução livre (*system prompt*), reforçados
@@ -52,7 +52,7 @@ Fale como um narrador epico | No fim, tudo mudou.
 ```bash
 # Clonar uma voz (template ref_edit)
 python infer/clone_voice.py \
-  --adapter EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr \
+  --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora \
   --ref-audio ref.wav --ref-text "transcrição exata da referência" \
   --text "Texto que o modelo deve falar." --out out/clone.wav
 
@@ -65,6 +65,23 @@ python infer/ab_decode.py --adapter <adapter|pasta> --out out/ab
 
 `--adapter` aceita **pasta local** ou **id do Hugging Face** (baixa na hora).
 Sem `--adapter`, gera com o modelo base (controle).
+
+## Texto longo, blocos e candidatos
+
+A UI divide o texto em blocos de ≤ 10 s (*Dividir texto longo*, ligado por padrão) e gera cada
+bloco com a mesma referência; *Candidatos por bloco* ≥ 3 escolhe a variação mais "central"
+(medoid ECAPA) entre as de duração plausível. `max_new_tokens` vale por bloco (12,5 tokens = 1 s).
+
+## Formato da referência
+
+*Como no treino* (padrão): mono, 24 kHz, corte de silêncio nas pontas (top_db 40) e pico normalizado
+para 0,95 — o formato que o adapter viu. *48 kHz* reproduz o comportamento antigo da UI; *Original*
+usa o arquivo como está. O arquivo original nunca é alterado (cache em `voice_cache/`).
+
+## Vozes salvas
+
+*Salvar voz* copia a referência (upload/microfone **ou** caminho digitado) para
+`<artifacts>/voice_refs/` e grava também escala do adapter e formato da referência.
 
 ## Dica de referência (clonagem)
 

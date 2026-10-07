@@ -126,7 +126,7 @@ def ensure_adapter(repo_id: str | None = None, dest=None) -> Path | None:
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         if "404" in msg or "Repository Not Found" in msg:
-            print(f"[setup] adapter '{repo_id}' ainda nao esta publicado no Hugging Face; "
+            print(f"[setup] adapter '{repo_id}' nao encontrado no Hugging Face (repo inexistente ou privado); "
                   "seguindo com os adapters locais. Para desativar o download, deixe "
                   "PTBR_ADAPTER_REPO vazio no .env.", flush=True)
         else:
@@ -224,6 +224,42 @@ def cached_reference(wav_path):
     return _code_cache.get(str(Path(wav_path)))
 
 
+# ------------------------------------------- padronizacao da referencia em 48 kHz
+REF_SR = 48_000
+
+
+def reference_48k(wav_path, cache_dir=None) -> Path:
+    """Devolve um WAV mono **48 kHz** do arquivo de referencia (cacheado).
+
+    Por que: a taxa do arquivo de referencia muda os *codes* do codec (medimos 24k
+    vs 48k = ~70% de codes iguais), porque o codec reamostra internamente. Entao
+    padronizamos a referencia em 48 kHz para nao descartar o conteudo agudo. Se a
+    origem for < 48 kHz, reamostra para cima (padronizacao; nao recupera o que nao
+    existe). O arquivo original nao e alterado.
+    """
+    import hashlib
+
+    import librosa
+    import numpy as np
+    import soundfile as sf
+
+    src = Path(wav_path)
+    d = Path(cache_dir) if cache_dir else (paths.ARTIFACTS / "voice_cache")
+    d.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(
+        f"{src.resolve()}|{src.stat().st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:16]
+    out = d / f"ref48_{key}.wav"
+    if out.is_file():
+        return out
+    wav, sr = sf.read(str(src), dtype="float32", always_2d=True)
+    wav = wav.mean(axis=1)
+    if sr != REF_SR:
+        wav = librosa.resample(wav, orig_sr=sr, target_sr=REF_SR)
+    sf.write(str(out), np.clip(wav, -1.0, 1.0).astype("float32"), REF_SR, subtype="PCM_16")
+    return out
+
+
 # --------------------------------------------- similaridade de locutor (ECAPA)
 _ecapa = None
 
@@ -235,10 +271,18 @@ def _load_ecapa(device: str = "cpu"):
             from speechbrain.inference.speaker import EncoderClassifier
         except Exception:  # noqa: BLE001
             from speechbrain.pretrained import EncoderClassifier
+        kw = {}
+        try:  # Windows sem privilegio de admin/modo desenvolvedor nao cria symlink (WinError 1314)
+            from speechbrain.utils.fetching import LocalStrategy
+
+            kw["local_strategy"] = LocalStrategy.COPY
+        except Exception:  # noqa: BLE001  (speechbrain antigo: sem o parametro)
+            pass
         _ecapa = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
             savedir=str(paths.ARTIFACTS / "voice_cache" / "spkrec-ecapa"),
             run_opts={"device": device},
+            **kw,
         )
     return _ecapa
 

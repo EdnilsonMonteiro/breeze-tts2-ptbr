@@ -28,6 +28,8 @@ _CORE = _ROOT / "core"
 if str(_CORE) not in sys.path:
     sys.path.insert(0, str(_CORE))
 import common_breeze as CB  # noqa: E402
+import reference_prep as RP  # noqa: E402
+import text_norm as TN  # noqa: E402
 
 
 def main() -> None:
@@ -41,9 +43,12 @@ def main() -> None:
     ap.add_argument("--instruction", default="Fale com clareza e naturalidade.")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--temperature", type=float, default=0.9)
+    ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-k", type=int, default=50)
-    ap.add_argument("--max-new-tokens", type=int, default=800)
+    ap.add_argument("--max-new-tokens", type=int, default=400,
+                    help="12,5 tokens = 1 s (400 ~ 32 s). Textos > ~10 s: use a UI (divide em blocos)")
+    ap.add_argument("--ref-format", choices=list(RP.MODES), default="train",
+                    help="train = 24 kHz/trim/norm (como no treino; default) | 48k = legado | raw")
     args = ap.parse_args()
 
     ref_audio = Path(args.ref_audio)
@@ -57,8 +62,12 @@ def main() -> None:
             return text.strip()
         sys.exit(f"[clone] falta --{label} ou --{label}-file")
 
-    ref_text = _resolve(args.ref_text, args.ref_text_file, "ref-text")
-    target_text = _resolve(args.text, args.text_file, "text")
+    ref_text = TN.normalize(_resolve(args.ref_text, args.ref_text_file, "ref-text"))
+    target_text = TN.normalize(_resolve(args.text, args.text_file, "text"))   # numeros/siglas por extenso
+    ref_prepared, _ref_dur = RP.prepare_reference(ref_audio, CB.ARTIFACTS / "voice_cache", args.ref_format)
+    _w = RP.duration_warning(_ref_dur)
+    if _w:
+        print(f"[clone] (aviso) {_w}", flush=True)
 
     from breeze_infer.runtime import set_all_seeds, update_generation_config_for_breeze
     from breeze_infer.templates import get_template, prepare_inputs
@@ -85,7 +94,7 @@ def main() -> None:
         "text": target_text,
         "instruction": args.instruction,
         "speaker": "S0",
-        "ref_audio_path": str(ref_audio),
+        "ref_audio_path": str(ref_prepared),
         "ref_text": ref_text,
     }
     set_all_seeds(args.seed)

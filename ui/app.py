@@ -16,10 +16,12 @@ dual-CFG, cfg_ref controla a fidelidade a voz e cfg_ins a aderencia a instrucao.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -49,6 +51,10 @@ if str(_CORE) not in sys.path:
 
 import common_breeze as CB  # noqa: E402
 import text_norm as TN  # noqa: E402
+import adapter_scale as AS  # noqa: E402
+import reference_prep as RP  # noqa: E402
+import text_blocks as TB  # noqa: E402
+import candidate_select as CS  # noqa: E402
 import soundfile as sf  # noqa: E402
 import torch  # noqa: E402
 
@@ -57,7 +63,7 @@ OUT_DIR = CB.OUT_DIR
 BASE_LABEL = "(base - sem adapter)"
 
 EMOTIONS = {
-    "Neutro / natural": "Fale de forma clara e natural.",
+    "Neutro / natural": "Fale com clareza e naturalidade.",
     "Alegre / sorrindo": "Fale com alegria, entusiasmo e um sorriso na voz.",
     "Empolgado": "Fale com muita empolgacao, energia e ritmo acelerado.",
     "Triste / melancolico": "Fale com tristeza e melancolia, em tom baixo e pausado.",
@@ -138,6 +144,7 @@ _STATE = {
     "audio_tok": None,
     "device": "cuda",
     "adapter_choices": [],
+    "ref_warned": set(),
 }
 
 
@@ -185,9 +192,98 @@ def _save_voices(data: dict) -> None:
     VOICES_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+# ------------------------------------------------------------------ estado da UI
+UI_STATE_PATH = CB.ARTIFACTS / "ui_state.json"
+
+
+def _load_ui_state() -> dict:
+    if UI_STATE_PATH.is_file():
+        try:
+            return json.loads(UI_STATE_PATH.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+    return {}
+
+
+def _save_ui_state(**kw) -> None:
+    data = _load_ui_state()
+    data.update(kw)
+    UI_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UI_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _adapter_mtime(label: str) -> float | None:
+    p = _STATE.get("adapter_paths", {}).get(label)
+    try:
+        return (Path(p) if p else (CB.ADAPTERS_DIR / label)).stat().st_mtime
+    except OSError:
+        return None
+
+
+def _newest_adapter(adapters: list[str], prefer_final: bool = True) -> str | None:
+    """Checkpoint mais recente (por data). Com `prefer_final`, `final`/`best` vem antes de
+    um `stepN` mais novo (checkpoints intermediarios nao sao a entrega da run)."""
+    def newest(cands: list[str]) -> str | None:
+        best, best_t = None, None
+        for a in cands:
+            t = _adapter_mtime(a)
+            if t is not None and (best_t is None or t > best_t):
+                best, best_t = a, t
+        return best
+
+    real = [a for a in adapters if a != BASE_LABEL]
+    if prefer_final:
+        pick = newest([a for a in real if a.endswith("/final") or a.endswith("/best")])
+        if pick:
+            return pick
+    return newest(real)
+
+
+def _env_adapter(adapters: list[str]) -> str | None:
+    """$PTBR_DEFAULT_ADAPTER: rotulo do dropdown OU caminho da pasta do adapter."""
+    env = os.environ.get("PTBR_DEFAULT_ADAPTER", "").strip()
+    if not env:
+        return None
+    if env in adapters:
+        return env
+    try:
+        want = Path(env).resolve()
+    except OSError:
+        return None
+    for label, p in _STATE.get("adapter_paths", {}).items():
+        try:
+            if Path(p).resolve() == want and label in adapters:
+                return label
+        except OSError:
+            continue
+    return None
+
+
+def _default_adapter_label(adapters: list[str]) -> str:
+    """Prioriza: ultimo adapter usado -> $PTBR_DEFAULT_ADAPTER -> `final`/`best` mais
+    recente -> adapter mais recente -> primeiro da lista (base)."""
+    last = _load_ui_state().get("adapter")
+    if last in adapters:
+        return last
+    return _env_adapter(adapters) or _newest_adapter(adapters) or adapters[0]
+
+
+def _stash_reference(src: str, name: str) -> str:
+    """Copia a referencia para <ARTIFACTS>/voice_refs/ (o arquivo do Gradio e temporario e o
+    caminho digitado pode mudar de lugar). Retorna o caminho da copia."""
+    sp = Path(str(src))
+    d = CB.ARTIFACTS / "voice_refs"
+    d.mkdir(parents=True, exist_ok=True)
+    h = hashlib.sha1(f"{sp.resolve()}|{sp.stat().st_mtime_ns}".encode()).hexdigest()[:8]
+    dst = d / f"{_slug(name)}_{h}{sp.suffix or '.wav'}"
+    if not dst.exists():
+        shutil.copyfile(sp, dst)
+    return str(dst)
+
+
 def _persist_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
                    temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins,
-                   seed=None) -> str:
+                   seed=None, adapter_scale=1.0, ref_format="train") -> str:
     name = (name or "").strip() or (Path(ref_path).stem if ref_path else "voz") or "voz"
     data = _load_voices()
     data[name] = {
@@ -197,18 +293,28 @@ def _persist_voice(name, ref_path, ref_text, adapter_label, emotion, instruction
         "max_new_tokens": int(max_new), "cfg_scale": float(cfg_scale),
         "use_dual_cfg": bool(use_dual), "cfg_ref": float(cfg_ref), "cfg_ins": float(cfg_ins),
         "seed": int(seed) if seed is not None else None,
+        "adapter_scale": float(adapter_scale), "ref_format": ref_format or "train",
     }
     _save_voices(data)
     return name
 
 
-def save_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
-               temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed):
+def save_voice(name, ref_audio, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
+               temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed,
+               adapter_scale, ref_format):
     name = (name or "").strip()
     if not name:
         raise gr.Error("Informe um nome para a voz.")
-    _persist_voice(name, ref_path, ref_text, adapter_label, emotion, instruction, speaker,
-                   temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed)
+    # a referencia pode vir do UPLOAD/microfone ou do caminho digitado (antes so o caminho era salvo)
+    src = (ref_path or "").strip() or ref_audio
+    stored = ""
+    if src:
+        if not Path(str(src)).is_file():
+            raise gr.Error(f"Arquivo de referencia nao encontrado: {src}")
+        stored = _stash_reference(str(src), name)
+    _persist_voice(name, stored, ref_text, adapter_label, emotion, instruction, speaker,
+                   temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed,
+                   adapter_scale, ref_format)
     return gr.update(choices=sorted(_load_voices()), value=name)
 
 
@@ -221,15 +327,18 @@ def load_voice(name):
         gr.update(value=v.get("emotion", "Neutro / natural")),
         gr.update(value=v.get("instruction", EMOTIONS["Neutro / natural"])),
         gr.update(value=v.get("speaker", "S0")),
-        gr.update(value=v.get("temperature", 0.9)),
+        gr.update(value=v.get("temperature", 0.7)),
         gr.update(value=v.get("top_k", 50)),
         gr.update(value=v.get("top_p", 1.0)),
-        gr.update(value=v.get("max_new_tokens", 800)),
+        gr.update(value=v.get("max_new_tokens", 400)),
         gr.update(value=v.get("cfg_scale", 1.0)),
         gr.update(value=v.get("use_dual_cfg", False)),
         gr.update(value=v.get("cfg_ref", 3.0)),
         gr.update(value=v.get("cfg_ins", 3.0)),
         gr.update(value=v.get("seed") if v.get("seed") is not None else 42),
+        gr.update(value=v.get("adapter_scale", 1.0)),
+        gr.update(value=v.get("ref_format", "train")),
+        gr.update(value=v.get("ref_path") or None),           # mostra a referencia no player
     )
 
 
@@ -263,6 +372,10 @@ def load_model() -> None:
 def use_adapter(label: str):
     """Retorna o modelo a usar (base ou com adapter), trocando o adapter via PEFT."""
     load_model()
+    # Robustez: alguns componentes (ou vozes salvas) podem entregar lista; pega o 1o.
+    if isinstance(label, (list, tuple)):
+        label = label[0] if label else BASE_LABEL
+    label = "" if label is None else str(label)
     raw = _STATE["raw"]
     peft = _STATE["peft"]
 
@@ -299,23 +412,15 @@ def use_adapter(label: str):
 
 
 def _set_adapter_scale(model, factor: float) -> None:
-    """Multiplica a escala TREINADA do LoRA por `factor` (1.0 = como treinado).
+    """Escala = escala TREINADA x `factor` (1.0 = como treinado; v2/v3: alpha/r = 4,0).
 
-    O adapter foi treinado com rsLoRA (alpha/sqrt(r)); `factor<1.0` atenua
-    (ex.: 0.5 reduz de 8.0 para 4.0). `factor=1.0` mantem a escala treinada.
+    Implementacao unica em core/adapter_scale.py: base registrado POR CHAVE (adapter carregado
+    depois nao herda escala errada) e idempotente.
     """
     try:
-        for m in model.modules():
-            sc = getattr(m, "scaling", None)
-            if isinstance(sc, dict) and sc:
-                base = getattr(m, "_ptbr_base_scaling", None)
-                if base is None:
-                    base = dict(sc)
-                    m._ptbr_base_scaling = base
-                for k, v in base.items():
-                    sc[k] = float(v) * float(factor)
-    except Exception:  # noqa: BLE001
-        pass
+        AS.apply_adapter_scale(model, float(factor))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ui] (aviso) nao foi possivel ajustar a escala do adapter: {exc}", flush=True)
 
 
 # ------------------------------------------------------------------ gen
@@ -340,6 +445,7 @@ def _generate(
     cfg_ref: float,
     cfg_ins: float,
     adapter_scale: float = 1.0,
+    ref_format: str = "train",
 ) -> tuple[np.ndarray, int]:
     """Gera UMA locucao (uma instrucao global). Retorna (wav float32, sample_rate)."""
     text = TN.normalize(text)  # numeros por extenso (o modelo fala melhor)
@@ -357,8 +463,19 @@ def _generate(
 
     request = {"id": "ui", "text": text, "instruction": instruction, "speaker": speaker or "S0"}
     if has_ref:
+        # prepara a referencia como o TREINO a viu (mono 24 kHz, trim, peak-norm); cacheado,
+        # nao altera o arquivo original. "48k" = formato antigo; "raw" = arquivo como esta.
+        try:
+            ref_audio, ref_dur = RP.prepare_reference(ref_audio, CB.ARTIFACTS / "voice_cache",
+                                                      ref_format or "train")
+            warn = RP.duration_warning(ref_dur)
+            if warn and str(ref_audio) not in _STATE["ref_warned"]:
+                _STATE["ref_warned"].add(str(ref_audio))
+                gr.Warning(warn)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ui] (aviso) preparo da referencia falhou: {exc}", flush=True)
         request["ref_audio_path"] = str(ref_audio)
-        request["ref_text"] = ref_text.strip()
+        request["ref_text"] = TN.normalize(ref_text.strip())   # mesma normalizacao do texto-alvo
         template = "ref_edit_tata"
         try:
             CB.cache_reference(audio_tok, ref_audio)  # codifica a referencia 1x
@@ -393,6 +510,190 @@ def _generate(
         wav_t = wav_t[0]
     sr = audio_tok.get_output_sample_rate()
     return wav_t.detach().float().cpu().numpy().astype(np.float32), sr
+
+
+def _rms(w: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(w ** 2))) if len(w) else 0.0
+
+
+def _medoid_pick(wavs: list[np.ndarray], sr: int, n_words: int) -> int:
+    """Indice do candidato mais CENTRAL (ECAPA) entre os de duracao plausivel para o texto.
+
+    A escolha por medoid (nao pelo maior cos com a referencia) evita premiar ruido de
+    amostragem; o gate de duracao descarta fala arrastada/truncada.
+    """
+    import tempfile
+
+    ok = [i for i, w in enumerate(wavs) if TB.dur_ok(len(w) / sr, n_words)] or list(range(len(wavs)))
+    if len(ok) <= 2:
+        return ok[0]
+    embs = []
+    with tempfile.TemporaryDirectory() as td:
+        for i in ok:
+            pth = Path(td) / f"c{i}.wav"
+            sf.write(str(pth), np.clip(wavs[i], -1.0, 1.0), sr, subtype="PCM_16")
+            embs.append(CB.speaker_embed(pth, "cpu"))
+    E = np.stack(embs)
+    E = E / (np.linalg.norm(E, axis=1, keepdims=True) + 1e-9)
+    c = E.mean(axis=0)
+    c = c / (np.linalg.norm(c) + 1e-9)
+    return ok[int(np.argmax(E @ c))]
+
+
+def _log_error(where: str) -> None:
+    """Grava o traceback atual em <ui_out>/ui_error.log (a janela do run.bat perde o historico)."""
+    import traceback
+
+    try:
+        OUT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(OUT_DIR / "ui_error.log", "a", encoding="utf-8") as f:
+            f.write(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} [{where}]\n{traceback.format_exc()}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _get_asr():
+    """faster-whisper (carregado 1x, compartilhado com 'Transcrever').
+
+    Padrao: CPU int8 (nao disputa VRAM com o Breeze e nao depende de cuBLAS/cuDNN).
+    Opcoes: PTBR_WHISPER_DEVICE=cuda (float16; cai para CPU se falhar), PTBR_WHISPER_MODEL
+    (padrao large-v3), PTBR_WHISPER_THREADS (CPU)."""
+    model = _STATE.get("asr")
+    if model is None:
+        from faster_whisper import WhisperModel
+
+        name = os.environ.get("PTBR_WHISPER_MODEL", "large-v3")
+        dev = os.environ.get("PTBR_WHISPER_DEVICE", "cpu").lower()
+        if dev == "cuda":
+            try:
+                model = WhisperModel(name, device="cuda", compute_type="float16")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ui] (aviso) whisper em cuda falhou ({exc}); usando CPU", flush=True)
+        if model is None:
+            threads = int(os.environ.get("PTBR_WHISPER_THREADS", "0") or 0)
+            model = WhisperModel(name, device="cpu", compute_type="int8", cpu_threads=threads)
+        _STATE["asr"] = model
+    return model
+
+
+def _asr_text(wav: np.ndarray, sr: int) -> str:
+    """Transcreve um candidato SEM dar o texto-alvo como prompt (senao o Whisper "corrige" o erro)."""
+    import librosa
+
+    x = librosa.resample(np.asarray(wav, dtype=np.float32), orig_sr=sr, target_sr=16000) if sr != 16000 \
+        else np.asarray(wav, dtype=np.float32)
+    segments, _ = _get_asr().transcribe(x, language="pt", vad_filter=False,
+                                        condition_on_previous_text=False)
+    return " ".join(s.text.strip() for s in segments).strip()
+
+
+def _embed_wav(wav: np.ndarray, sr: int) -> np.ndarray:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        pth = Path(td) / "c.wav"
+        sf.write(str(pth), np.clip(wav, -1.0, 1.0), sr, subtype="PCM_16")
+        return CB.speaker_embed(pth, "cpu")
+
+
+def _ref_profile(ref_audio: str | None, ref_text: str, ref_format: str):
+    """(embedding ECAPA, RMS) da referencia PREPARADA (a mesma que o modelo ouviu). None sem ref."""
+    if not (ref_audio and (ref_text or "").strip()):
+        return None, None
+    path, _dur = RP.prepare_reference(ref_audio, CB.ARTIFACTS / "voice_cache", ref_format or "train")
+    p = Path(str(path))
+    key = (str(p), p.stat().st_mtime_ns)
+    cache = _STATE.setdefault("ref_profile", {})
+    if key not in cache:
+        w, sr = sf.read(str(p), dtype="float32", always_2d=True)
+        cache[key] = (CB.speaker_embed(p, "cpu"), CS.rms(w[:, 0]))
+    return cache[key]
+
+
+def _score_block(wavs: list[np.ndarray], sr: int, btxt: str, seeds: list[int], gen_kwargs: dict):
+    """Melhor de N por (palavras certas via Whisper) + (voz parecida com a referencia via ECAPA).
+
+    Retorna (posicao escolhida, [Cand]). Whisper indisponivel -> so voz/duracao (avisa 1x)."""
+    transcribe = None if _STATE.get("asr_failed") else _asr_text
+    if transcribe is not None:
+        try:
+            _get_asr()
+        except Exception as exc:  # noqa: BLE001
+            _STATE["asr_failed"] = True
+            transcribe = None
+            print(f"[ui] (aviso) faster-whisper indisponivel: {exc}", flush=True)
+            gr.Warning("Whisper indisponivel: escolhendo so pela voz (instale faster-whisper).")
+    ref_emb, ref_rms = _ref_profile(gen_kwargs.get("ref_audio"), gen_kwargs.get("ref_text", ""),
+                                    gen_kwargs.get("ref_format", "train"))
+    n_words = len(btxt.split())
+    return CS.evaluate(
+        wavs, sr, TN.normalize(btxt), seeds,
+        dur_ok=lambda d: TB.dur_ok(d, n_words),
+        transcribe=transcribe, embed=_embed_wav, ref_emb=ref_emb, ref_rms=ref_rms,
+        norm=TN.normalize,
+    )
+
+
+def _generate_long(
+    text: str,
+    *,
+    seed: int,
+    auto_chunk: bool = True,
+    max_block_s: float = 10.0,
+    n_candidates: int = 1,
+    gap_ms: int = 200,
+    best_of: bool = True,
+    report: list | None = None,
+    **gen_kwargs,
+) -> tuple[np.ndarray, int, int]:
+    """Texto longo -> blocos de <= max_block_s (o treino so viu clipes <= ~10 s; gerar 20-30 s
+    de uma vez e extrapolar o comprimento e a voz "escorrega"). Cada bloco usa a MESMA
+    referencia. Com n_candidates > 1: `best_of` escolhe por Whisper (palavras) + SECS (voz);
+    sem `best_of` usa o medoid (so age com >= 3). Seeds: seed + bloco*1000 + k (k=0 = a seed
+    exata de antes, entao o melhor-de-N nunca fica pior que o candidato unico).
+    `report` (lista) recebe 1 linha Markdown por bloco. Retorna (wav, sr, n_blocos).
+
+    Com 1 bloco e 1 candidato o comportamento e o de antes (seed exata)."""
+    blocks = TB.blocks_for_seconds(text, float(max_block_s)) if auto_chunk else [text]
+    blocks = blocks or [text]
+    parts: list[np.ndarray] = []
+    sr = 24_000
+    for bi, btxt in enumerate(blocks):
+        cands: list[np.ndarray] = []
+        seeds = [int(seed) + bi * 1000 + k for k in range(max(1, int(n_candidates)))]
+        for sd in seeds:
+            wav, sr = _generate(text=btxt, seed=sd, **gen_kwargs)
+            cands.append(wav)
+        pick = 0
+        if len(cands) > 1 and best_of:
+            try:
+                pick, scored = _score_block(cands, sr, btxt, seeds, gen_kwargs)
+                if report is not None:
+                    has_ref = bool(gen_kwargs.get("ref_audio")) and bool((gen_kwargs.get("ref_text") or "").strip())
+                    report.append(CS.format_block(bi, scored, has_ref,
+                                                  any(c.wer is not None for c in scored)))
+            except Exception as exc:  # noqa: BLE001
+                _log_error("melhor-de-N")
+                print(f"[ui] (aviso) melhor-de-N falhou ({exc}); usando medoid", flush=True)
+                try:
+                    pick = _medoid_pick(cands, sr, len(btxt.split())) if len(cands) > 2 else 0
+                except Exception:  # noqa: BLE001  (sem ECAPA: fica com a seed exata, nao derruba a geracao)
+                    _log_error("medoid")
+                    pick = 0
+        elif len(cands) > 2:
+            pick = _medoid_pick(cands, sr, len(btxt.split()))
+        parts.append(cands[pick])
+    if len(parts) > 1:                                  # iguala o volume entre blocos
+        tgt = float(np.mean([_rms(w) for w in parts]))
+        parts = [w * min(4.0, tgt / _rms(w)) if _rms(w) > 1e-6 else w for w in parts]
+        gap = np.zeros(int(sr * max(0, int(gap_ms)) / 1000.0), dtype=np.float32)
+        joined: list[np.ndarray] = []
+        for i, w in enumerate(parts):
+            joined.append(w.astype(np.float32))
+            if i < len(parts) - 1:
+                joined.append(gap)
+        return np.concatenate(joined), sr, len(blocks)
+    return parts[0], sr, 1
 
 
 def _save_wav(wav: np.ndarray, sr: int, slug: str, ref_audio: str | None) -> Path:
@@ -465,6 +766,15 @@ def adjust_pauses(
     return np.concatenate(pieces), len(gaps)
 
 
+def _report_md(report: list[str], max_lines: int = 8) -> str:
+    """Bloco Markdown 'Melhor de N' para o painel de info (vazio se nao houve selecao)."""
+    if not report:
+        return ""
+    shown = report[:max_lines]
+    more = f"\n- ... (+{len(report) - max_lines} blocos)" if len(report) > max_lines else ""
+    return "  \n**Melhor de N** (✔ = escolhido):\n" + "\n".join(f"- {r}" for r in shown) + more + "\n"
+
+
 def synthesize(
     text: str,
     emotion: str = "Neutro / natural",
@@ -474,10 +784,10 @@ def synthesize(
     adapter_label: str = BASE_LABEL,
     speaker: str = "S0",
     seed: int = 42,
-    temperature: float = 0.9,
+    temperature: float = 0.7,
     top_k: int = 50,
     top_p: float = 1.0,
-    max_new_tokens: int = 800,
+    max_new_tokens: int = 400,
     cfg_scale: float = 1.0,
     use_dual_cfg: bool = False,
     cfg_ref: float = 1.0,
@@ -485,6 +795,11 @@ def synthesize(
     pause_on: bool = False,
     pause_ms: int = 300,
     adapter_scale: float = 1.0,
+    ref_format: str = "train",
+    auto_chunk: bool = True,
+    max_block_s: float = 10.0,
+    n_candidates: int = 1,
+    best_of: bool = True,
 ):
     text = (text or "").strip()
     if not text:
@@ -497,12 +812,15 @@ def synthesize(
         raise gr.Error("Referencia e transcricao devem ser preenchidas juntas.")
 
     t0 = time.time()
-    wav, sr = _generate(
-        text=text, instruction=instruction, ref_audio=ref_audio, ref_text=ref_text,
-        adapter_label=adapter_label, speaker=speaker, seed=seed, temperature=temperature,
+    report: list[str] = []
+    wav, sr, n_blocks = _generate_long(
+        text, seed=int(seed), auto_chunk=auto_chunk, max_block_s=max_block_s,
+        n_candidates=n_candidates, best_of=best_of, report=report,
+        instruction=instruction, ref_audio=ref_audio, ref_text=ref_text,
+        adapter_label=adapter_label, speaker=speaker, temperature=temperature,
         top_k=top_k, top_p=top_p, max_new_tokens=max_new_tokens, cfg_scale=cfg_scale,
         use_dual_cfg=use_dual_cfg, cfg_ref=cfg_ref, cfg_ins=cfg_ins,
-        adapter_scale=adapter_scale,
+        adapter_scale=adapter_scale, ref_format=ref_format,
     )
     n_pauses = 0
     if pause_on:
@@ -513,6 +831,15 @@ def synthesize(
     adapter_txt = adapter_label if adapter_label != BASE_LABEL else "base"
     persist_line = (f"  \n**Pausas:** {n_pauses} ajustada(s) para {int(pause_ms)} ms"
                     if pause_on else "")
+    if n_blocks > 1 or n_candidates > 1:
+        persist_line += (f"  \n**Blocos:** {n_blocks} (<= {float(max_block_s):.0f} s cada) x "
+                         f"{int(n_candidates)} candidato(s)/bloco")
+    persist_line += _report_md(report)
+    if adapter_label == BASE_LABEL:
+        persist_line += "  \n**Aviso:** modelo base (sem adapter) nao fala pt-BR bem."
+    if not has_ref and adapter_label != BASE_LABEL:
+        persist_line += ("  \n**Aviso:** sem referencia — adapters v2 nao foram treinados nesse modo "
+                         "(so os v3 cobrem ~15 %); prefira clonar com uma referencia.")
     info = (
         f"**Modo:** {mode}  \n"
         f"**Adapter:** {adapter_txt}  \n"
@@ -561,15 +888,20 @@ def synthesize_segments(
     adapter_label: str = BASE_LABEL,
     speaker: str = "S0",
     seed: int = 42,
-    temperature: float = 0.9,
+    temperature: float = 0.7,
     top_k: int = 50,
     top_p: float = 1.0,
-    max_new_tokens: int = 800,
+    max_new_tokens: int = 400,
     cfg_scale: float = 1.0,
     use_dual_cfg: bool = False,
     cfg_ref: float = 1.0,
     cfg_ins: float = 1.0,
     adapter_scale: float = 1.0,
+    ref_format: str = "train",
+    auto_chunk: bool = True,
+    max_block_s: float = 10.0,
+    n_candidates: int = 1,
+    best_of: bool = True,
 ):
     default_instr = (instruction_custom or "").strip() or EMOTIONS.get(emotion, EMOTIONS["Neutro / natural"])
     segs = parse_segments(script, default_instr)
@@ -583,14 +915,17 @@ def synthesize_segments(
     t0 = time.time()
     sr = None
     parts: list[np.ndarray] = []
+    report: list[str] = []
     for i, (instr, seg_text) in enumerate(segs):
-        wav, sr = _generate(
-            text=seg_text, instruction=instr, ref_audio=ref_audio, ref_text=ref_text,
-            adapter_label=adapter_label, speaker=speaker, seed=int(seed) + i,
+        wav, sr, _nb = _generate_long(
+            seg_text, seed=int(seed) + i, auto_chunk=auto_chunk, max_block_s=max_block_s,
+            n_candidates=n_candidates, best_of=best_of, report=report,
+            instruction=instr, ref_audio=ref_audio, ref_text=ref_text,
+            adapter_label=adapter_label, speaker=speaker,
             temperature=temperature, top_k=top_k, top_p=top_p,
             max_new_tokens=max_new_tokens, cfg_scale=cfg_scale,
             use_dual_cfg=use_dual_cfg, cfg_ref=cfg_ref, cfg_ins=cfg_ins,
-            adapter_scale=adapter_scale,
+            adapter_scale=adapter_scale, ref_format=ref_format,
         )
         parts.append(wav)
         if gap_ms and i < len(segs) - 1:
@@ -608,7 +943,7 @@ def synthesize_segments(
         f"**CFG:** {cfg_scale}"
         + (f" (dual ref={cfg_ref}, ins={cfg_ins})" if use_dual_cfg else "")
         + f"  \n**Duracao:** {len(full) / sr:.2f}s  \n**Tempo:** {time.time() - t0:.1f}s  \n"
-        f"**Arquivo:** `{out}`\n\n{lines}"
+        f"**Arquivo:** `{out}`{_report_md(report)}\n\n{lines}"
     )
     return str(out), info
 
@@ -622,12 +957,7 @@ def transcribe_ref(ref_audio: str | None, ref_path: str | None = None) -> str:
     if not Path(str(src)).is_file():
         gr.Warning(f"Arquivo de referencia nao encontrado: {src}")
         return ""
-    model = _STATE.get("asr")
-    if model is None:
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel("large-v3", device="cpu", compute_type="int8")
-        _STATE["asr"] = model
+    model = _get_asr()
     segments, _ = model.transcribe(str(src), language="pt", vad_filter=True)
     return " ".join(s.text.strip() for s in segments).strip()
 
@@ -639,10 +969,7 @@ import gradio as gr  # noqa: E402
 def build_ui() -> gr.Blocks:
     adapters = list_adapters()
     _STATE["adapter_choices"] = adapters
-    default_adapter = next(
-        (a for a in adapters if "r64_02" in a),
-        next((a for a in adapters if a.startswith("hf/")), adapters[0]),
-    )
+    default_adapter = _default_adapter_label(adapters)
 
     with gr.Blocks(title="Breeze TTS 2 - LoRA PT-BR") as demo:
         gr.Markdown(
@@ -656,7 +983,7 @@ def build_ui() -> gr.Blocks:
             with gr.Column(scale=3):
                 with gr.Tab("Com voz de referencia (clonagem)"):
                     ref_audio = gr.Audio(
-                        label="Audio de referencia (limpo, 3-30 s)",
+                        label="Audio de referencia (limpo, ideal 3-10 s; o treino viu ate ~10 s)",
                         type="filepath", sources=["upload", "microphone"],
                     )
                     with gr.Row():
@@ -670,11 +997,17 @@ def build_ui() -> gr.Blocks:
                         placeholder="O que exatamente e falado no audio de referencia.",
                         lines=3,
                     )
+                    ref_info = gr.Markdown("")
 
                 with gr.Tab("Sem referencia (voz padrao)"):
                     gr.Markdown(
                         "Neste modo o texto e falado com a voz padrao do modelo "
-                        "(nao clona). Use instrucao/CFG para o estilo."
+                        "(nao clona). Use instrucao/CFG para o estilo.\n\n"
+                        "**O modo e decidido por haver (ou nao) audio + transcricao preenchidos "
+                        "na aba de clonagem, nao pela aba aberta.**\n\n"
+                        "**Aviso:** adapters treinados na receita v2 foram treinados 100 % com "
+                        "referencia; sem referencia a qualidade pode ser pior que a do modelo "
+                        "base. Os adapters v3 cobrem esse modo (~15 % do treino)."
                     )
 
                 modo_seg = gr.Checkbox(
@@ -740,7 +1073,9 @@ def build_ui() -> gr.Blocks:
                     label="System prompt / instrucao (edite livremente)",
                     value=EMOTIONS["Neutro / natural"], lines=2,
                 )
-                emotion.change(lambda e: EMOTIONS.get(e, ""), inputs=emotion, outputs=instruction)
+                # .input (so acao do usuario): com .change, carregar uma voz salva disparava este evento e
+                # sobrescrevia a instrucao personalizada salva junto com a voz.
+                emotion.input(lambda e: EMOTIONS.get(e, ""), inputs=emotion, outputs=instruction)
 
                 with gr.Row():
                     adapter = gr.Dropdown(
@@ -784,12 +1119,26 @@ def build_ui() -> gr.Blocks:
                             "- **Seed**: semente do sorteio. Mesma seed + mesmos parâmetros = "
                             "mesmo áudio. Seeds diferentes mudam a realização — por isso algumas "
                             "'acertam' mais que outras.\n"
-                            "- **max_new_tokens**: limite de tokens de áudio (~86 tokens ≈ 1 s). "
-                            "Aumente para textos longos.\n"
+                            "- **max_new_tokens**: limite de tokens de áudio do BLOCO (o codec roda a "
+                            "12,5 tokens ≈ 1 s: 400 ≈ 32 s). Com *Dividir texto longo* ligado cada "
+                            "bloco tem ≤ 10 s, então 400 sobra.\n"
+                            "- **Dividir texto longo** (recomendado): o treino só viu clipes de até "
+                            "~10 s; gerar 20–30 s de uma vez faz a voz derivar. O texto é fatiado em "
+                            "blocos de ≤ N s (pontuação forte) e cada bloco usa a mesma referência.\n"
+                            "- **Escolher o melhor de N candidatos** (ligado por padrão, N = 4): gera N "
+                            "variações do bloco (seeds `seed`, `seed+1`, …) e escolhe: (1) duração "
+                            "plausível; (2) sem erro de palavra — o Whisper transcreve cada candidato e "
+                            "compara com o texto; (3) entre os sem erro, a **mais parecida com a "
+                            "referência** (SECS/ECAPA, volume igualado). Sem referência escolhe a mais "
+                            "'central'. O candidato 0 é o áudio que você teria com 1 só geração. N× mais "
+                            "lento; Whisper roda na CPU (`PTBR_WHISPER_DEVICE=cuda` para usar a GPU).\n"
+                            "- **Formato da referência**: *Como no treino* (24 kHz, corta silêncio das "
+                            "pontas, normaliza pico) é o que o adapter viu; *48 kHz* é o formato "
+                            "anterior desta UI; *Original* não mexe no arquivo.\n"
                             "- **Speaker id**: tag de locutor; mantenha `S0`.\n"
                             "- **Escala do adapter** (0,3–1,0): atenua o LoRA em inferência. "
-                            "`1,0` = escala treinada; menor reduz o 'over-steering' do adapter "
-                            "(mais estável, menos variância entre gerações)."
+                            "`1,0` = escala treinada (adapters v2/v3: alpha/r = 4,0) e é o recomendado: "
+                            "nos testes desta receita valores < 1,0 pioraram o português."
                         )
                     gr.Markdown(
                         "**CFG (classifier-free guidance):** `cfg_scale > 1` amplifica a "
@@ -804,19 +1153,41 @@ def build_ui() -> gr.Blocks:
                     speaker = gr.Textbox(value="S0", label="Speaker id")
                     with gr.Row():
                         seed = gr.Number(value=42, precision=0, label="Seed")
-                        max_new = gr.Number(value=800, precision=0, label="max_new_tokens")
+                        max_new = gr.Number(value=400, precision=0, label="max_new_tokens (12,5 tokens = 1 s)")
                     with gr.Row():
-                        temperature = gr.Slider(0.1, 1.5, value=0.9, step=0.05, label="Temperature")
+                        temperature = gr.Slider(0.1, 1.5, value=0.7, step=0.05, label="Temperature")
                         top_k = gr.Number(value=50, precision=0, label="top_k")
                         top_p = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="top_p")
                     adapter_scale = gr.Slider(
                         0.3, 1.0, value=1.0, step=0.05,
                         label="Escala do adapter (1.0 = treinada; <1.0 atenua)",
                     )
+                    with gr.Row():
+                        auto_chunk = gr.Checkbox(value=True, label="Dividir texto longo em blocos")
+                        max_block_s = gr.Slider(5.0, 10.0, value=10.0, step=0.5,
+                                                label="Duracao maxima do bloco (s)")
+                    ref_format = gr.Dropdown(
+                        choices=[("Como no treino (24 kHz, corta silencio, normaliza)", "train"),
+                                 ("48 kHz (formato anterior da UI)", "48k"),
+                                 ("Original (sem preparo)", "raw")],
+                        value="train", label="Formato da referencia",
+                    )
                     gr.Markdown(
                         "Dica: o texto de referencia deve ser a transcricao **exata** do audio. "
-                        "Referencias longas e limpas melhoram muito a clonagem."
+                        "Referencias **limpas de 3-10 s** funcionam melhor que as longas (o treino "
+                        "nao viu mais de ~10 s)."
                     )
+
+                with gr.Row():
+                    best_of = gr.Checkbox(
+                        value=True, scale=2,
+                        label="Escolher o melhor de N candidatos",
+                        info="Gera N audios (seed, seed+1, ...) e fica com o melhor: sem erro de "
+                             "palavra (Whisper) e mais parecido com a referencia (ECAPA). "
+                             "Desligado = 1 audio so. Leva ~N x mais tempo.",
+                    )
+                    n_cand = gr.Slider(2, 8, value=4, step=1, scale=2,
+                                       label="N (candidatos por bloco)")
 
                 btn = gr.Button("Gerar audio", variant="primary")
 
@@ -853,14 +1224,24 @@ def build_ui() -> gr.Blocks:
 
         def _run(text_, script_, gap_, modo_seg_, emotion_, instruction_, ref_audio_, ref_path_,
                  ref_text_, adapter_, speaker_, seed_, temperature_, top_k_, top_p_, max_new_,
-                 cfg_scale_, use_dual_, cfg_ref_, cfg_ins_, pause_on_, pause_ms_, adapter_scale_):
+                 cfg_scale_, use_dual_, cfg_ref_, cfg_ins_, pause_on_, pause_ms_, adapter_scale_,
+                 ref_format_, auto_chunk_, max_block_s_, n_cand_, best_of_):
             ref = ref_path_.strip() if (ref_path_ and ref_path_.strip()) else ref_audio_
+            if isinstance(adapter_, (list, tuple)):
+                adapter_ = adapter_[0] if adapter_ else BASE_LABEL
+            try:
+                _save_ui_state(adapter=adapter_)
+            except Exception:  # noqa: BLE001
+                pass
             common = dict(
                 emotion=emotion_, instruction_custom=instruction_, ref_audio=ref,
                 ref_text=ref_text_, adapter_label=adapter_, speaker=speaker_, seed=seed_,
                 temperature=temperature_, top_k=top_k_, top_p=top_p_,
                 max_new_tokens=max_new_, cfg_scale=cfg_scale_, use_dual_cfg=use_dual_,
                 cfg_ref=cfg_ref_, cfg_ins=cfg_ins_, adapter_scale=adapter_scale_,
+                ref_format=ref_format_, auto_chunk=bool(auto_chunk_),
+                max_block_s=float(max_block_s_),
+                n_candidates=int(n_cand_) if best_of_ else 1, best_of=bool(best_of_),
             )
             if modo_seg_:
                 return synthesize_segments(script=script_, gap_ms=int(gap_), **common)
@@ -870,25 +1251,57 @@ def build_ui() -> gr.Blocks:
             _run,
             inputs=[text, script, gap_ms, modo_seg, emotion, instruction, ref_audio, ref_path,
                     ref_text, adapter, speaker, seed, temperature, top_k, top_p, max_new,
-                    cfg_scale, use_dual, cfg_ref, cfg_ins, pause_on, pause_ms, adapter_scale],
+                    cfg_scale, use_dual, cfg_ref, cfg_ins, pause_on, pause_ms, adapter_scale,
+                    ref_format, auto_chunk, max_block_s, n_cand, best_of],
             outputs=[out_audio, out_info],
         )
 
-        demo.load(lambda: list_adapters(), outputs=[adapter])
+        def _check_ref(audio_, path_):
+            src = (path_ or "").strip() or audio_
+            if not src or not Path(str(src)).is_file():
+                return ""
+            try:
+                info = sf.info(str(src))
+                dur = info.frames / float(info.samplerate)
+            except Exception:  # noqa: BLE001
+                return ""
+            warn = RP.duration_warning(dur)
+            base = f"Referencia: **{dur:.1f} s** ({info.samplerate} Hz, {info.channels} canal(is))."
+            return base + (f"  \n:warning: {warn}" if warn else "  \nDuracao adequada.")
+
+        ref_audio.change(_check_ref, inputs=[ref_audio, ref_path], outputs=[ref_info])
+        ref_path.change(_check_ref, inputs=[ref_audio, ref_path], outputs=[ref_info])
+        # enviar/gravar um audio novo limpa o caminho digitado (senao o caminho antigo ganhava)
+        ref_audio.upload(lambda _a: "", inputs=[ref_audio], outputs=[ref_path])
+        ref_audio.stop_recording(lambda _a: "", inputs=[ref_audio], outputs=[ref_path])
+
+        def _refresh_init():
+            """No load: define o valor padrao (ultimo usado / mais recente)."""
+            opts = refresh_adapters()
+            return gr.update(choices=opts, value=_default_adapter_label(opts))
+
+        def _refresh_keep(current=None):
+            """No botao Atualizar: mantem a escolha atual se ela ainda existir."""
+            opts = refresh_adapters()
+            val = current if current in opts else _default_adapter_label(opts)
+            return gr.update(choices=opts, value=val)
+
+        demo.load(_refresh_init, outputs=[adapter])
         demo.load(lambda: gr.update(choices=sorted(_load_voices())), outputs=[voice_pick])
-        refresh_btn.click(lambda: gr.update(choices=refresh_adapters()), outputs=[adapter])
+        refresh_btn.click(_refresh_keep, inputs=[adapter], outputs=[adapter])
 
         save_voice_btn.click(
             save_voice,
-            inputs=[voice_name, ref_path, ref_text, adapter, emotion, instruction, speaker,
-                    temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins, seed],
+            inputs=[voice_name, ref_audio, ref_path, ref_text, adapter, emotion, instruction,
+                    speaker, temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref,
+                    cfg_ins, seed, adapter_scale, ref_format],
             outputs=[voice_pick],
         )
         load_voice_btn.click(
             load_voice, inputs=[voice_pick],
             outputs=[ref_path, ref_text, adapter, emotion, instruction, speaker,
                      temperature, top_k, top_p, max_new, cfg_scale, use_dual, cfg_ref, cfg_ins,
-                     seed],
+                     seed, adapter_scale, ref_format, ref_audio],
         )
         del_voice_btn.click(delete_voice, inputs=[voice_pick], outputs=[voice_pick, voice_name])
 

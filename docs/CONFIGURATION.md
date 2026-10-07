@@ -9,7 +9,7 @@ variáveis de ambiente ou por um `.env` na raiz.
 Copie `.env.example` para `.env` e edite:
 
 ```ini
-PTBR_ARTIFACTS=C:\IA\Breeze-tts
+PTBR_ARTIFACTS=/path/to/artifacts
 ```
 
 Sem `.env`, usa `./artifacts` e baixa tudo automaticamente.
@@ -20,7 +20,7 @@ Sem `.env`, usa `./artifacts` e baixa tudo automaticamente.
 |---|---|---|
 | `PTBR_ARTIFACTS` | `./artifacts` | raiz de `models/`, `training/`, `adapters/` |
 | `BREEZE_BASE_MODEL_REPO` | `BreezeBlue/Breeze-TTS-2` | modelo base no HF |
-| `PTBR_ADAPTER_REPO` | `EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr` | adapter LoRA no HF (vazio = não baixa) |
+| `PTBR_ADAPTER_REPO` | `EdnilsonMonts/Breeze-tts-2-brazillian-lora` | adapter LoRA no HF (vazio = não baixa) |
 | `BREEZE_TTS_REPO` | `./breeze-tts` | engine (o submódulo) |
 | `BREEZE_CKPT` | `<ARTIFACTS>/models/Breeze-TTS-2` | checkpoint base |
 | `BREEZE_TRAINING_DIR` | `<ARTIFACTS>/training` | runs/adapters locais de treino |
@@ -37,9 +37,10 @@ Na 1ª vez, o programa baixa do Hugging Face:
 2. **Adapter LoRA** → `<PTBR_ARTIFACTS>/adapters/<nome-do-repo>` (best-effort;
    se ainda não existir, segue com o base).
 
-> **O adapter LoRA ainda não foi publicado** no Hugging Face. Enquanto isso, o
-> download falha de forma silenciosa e você deve usar um adapter local
-> (ver abaixo) ou o modelo base.
+> O adapter LoRA padrão (r76, passo 1500) está em
+> [`EdnilsonMonts/Breeze-tts-2-brazillian-lora`](https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora)
+> e é baixado automaticamente. Se o download falhar, a UI segue com o modelo base ou com um
+> adapter local (ver abaixo).
 
 Se o repo for *gated*, aceite os termos e informe `HF_TOKEN`:
 https://huggingface.co/settings/tokens
@@ -49,12 +50,12 @@ https://huggingface.co/settings/tokens
 Coloque os arquivos em `<PTBR_ARTIFACTS>/adapters/<nome>/`:
 
 ```
-<PTBR_ARTIFACTS>/adapters/Breeze-TTS-2-lora-ptbr/
+<PTBR_ARTIFACTS>/adapters/Breeze-tts-2-brazillian-lora/
 ├─ adapter_config.json
 └─ adapter_model.safetensors
 ```
 
-A UI mostra como `hf/Breeze-TTS-2-lora-ptbr` e pula o download (a pasta já
+A UI mostra como `hf/Breeze-tts-2-brazillian-lora` e pula o download (a pasta já
 existe). Alternativas:
 
 - `PTBR_ADAPTERS_DIR` apontando para uma pasta com

@@ -11,12 +11,9 @@ via PEFT sobre o modelo base.
 
 Na **primeira execução**, o programa baixa automaticamente do Hugging Face:
 1. o **modelo base** `BreezeBlue/Breeze-TTS-2`;
-2. o **adapter LoRA** `EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr` (quando publicado).
+2. o **adapter LoRA** `EdnilsonMonts/Breeze-tts-2-brazillian-lora`.
 
-> **Aviso — o adaptador LoRA ainda NÃO foi publicado.** Não há modelo treinado
-> disponível neste repositório nem no Hugging Face. Este repo traz apenas o
-> **código** de inferência/UI; o download automático do adapter já está pronto
-> para quando ele for liberado (após treinos adicionais).
+> **Adaptador publicado:** [EdnilsonMonts/Breeze-tts-2-brazillian-lora](https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora) (checkpoint *r76, passo 1500*; veja o model card para dados de treino, avaliação e limites).
 
 > **Derived from Breeze TTS 2 by BreezeBlue and licensed for research and
 > non-commercial use only.** Veja `NOTICE`; a licença do modelo está em
@@ -79,11 +76,11 @@ e edite:
 
 ```ini
 # Onde ficam modelo base + adapters (fora do git)
-PTBR_ARTIFACTS=C:\IA\Breeze-tts
+PTBR_ARTIFACTS=/path/to/artifacts
 
 # Repos do Hugging Face (troque quando publicar o seu adapter)
 BREEZE_BASE_MODEL_REPO=BreezeBlue/Breeze-TTS-2
-PTBR_ADAPTER_REPO=EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr
+PTBR_ADAPTER_REPO=EdnilsonMonts/Breeze-tts-2-brazillian-lora
 
 # Necessário apenas se o repo for gated
 # HF_TOKEN=hf_xxx
@@ -93,7 +90,7 @@ PTBR_ADAPTER_REPO=EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr
 |---|---|---|
 | `PTBR_ARTIFACTS` | `./artifacts` | raiz de `models/`, `training/`, `adapters/` |
 | `BREEZE_BASE_MODEL_REPO` | `BreezeBlue/Breeze-TTS-2` | modelo base no HF |
-| `PTBR_ADAPTER_REPO` | `EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr` | adapter LoRA no HF (vazio = não baixa) |
+| `PTBR_ADAPTER_REPO` | `EdnilsonMonts/Breeze-tts-2-brazillian-lora` | adapter LoRA no HF (vazio = não baixa) |
 | `PTBR_ADAPTERS_DIR` | `<training>/runs` | adapters locais de treino |
 | `PTBR_HF_ADAPTERS_DIR` | `<artifacts>/adapters` | adapters baixados do HF |
 | `PTBR_OUT_DIR` | `<training>/ui_out` | áudio gerado pela UI |
@@ -110,12 +107,12 @@ Se você já tem o adapter (ex.: seu checkpoint de treino), coloque em
 `<PTBR_ARTIFACTS>/adapters/<nome>/`:
 
 ```
-<PTBR_ARTIFACTS>/adapters/Breeze-TTS-2-lora-ptbr/
+<PTBR_ARTIFACTS>/adapters/Breeze-tts-2-brazillian-lora/
 ├─ adapter_config.json
 └─ adapter_model.safetensors
 ```
 
-A UI mostra esse adapter como `hf/Breeze-TTS-2-lora-ptbr` e o download é pulado
+A UI mostra esse adapter como `hf/Breeze-tts-2-brazillian-lora` e o download é pulado
 (a pasta já existe). Alternativas: apontar `PTBR_ADAPTERS_DIR` para uma pasta com
 `<run>/checkpoints/<ckpt>/adapter_config.json`, ou deixar `PTBR_ADAPTER_REPO=`
 vazio para não tentar baixar nada.
@@ -134,13 +131,19 @@ python ui/app.py --selftest      # gera 1 áudio e sai (checa a instalação)
 Windows também: duplo-clique em `ui/run.bat`.
 
 Recursos da UI:
-- **Clonagem** com áudio de referência + transcrição exata;
-- Geração **sem referência** (voz padrão + instrução);
+- **Clonagem** com áudio de referência (**limpo, 3–10 s**) + transcrição exata; a referência é
+  preparada **como no treino** (24 kHz, corte de silêncio, pico normalizado) e a UI avisa se
+  passar de ~10 s. Texto **e** transcrição passam pela mesma normalização (números, moeda, hora,
+  siglas → por extenso);
+- Geração **sem referência** (voz padrão + instrução) — os adapters v2 não foram treinados nesse
+  modo; o modo é decidido por haver (ou não) áudio + transcrição, não pela aba aberta;
+- **Texto longo**: dividido automaticamente em blocos de ≤ 10 s (o treino só viu clipes até ~10 s),
+  com **N candidatos por bloco + medoid** opcional;
 - **Emoção/estilo** por *system prompt* e **CFG** (simples ou dual);
 - **Modo segmentado** (emoção por frase) e **ajuste de pausas**;
 - Escolha do **adapter LoRA** (lista os locais e os baixados; botão *Atualizar*);
-- **Escala do adapter (multiplicador)**: `1,0` = como treinado. Valores `< 1,0`
-  **pioram** o resultado — o adapter da receita v2 (escala de treino 4,0) **não**
+- **Escala do adapter (multiplicador)**: `1,0` = como treinado (recomendado; aplicada por módulo
+  e idempotente). Valores `< 1,0` **pioram** o resultado — o adapter da receita v2 (escala de treino 4,0) **não**
   está "over-steering". Detalhes e números em
   [ESTRATEGIA-PTBR.md](https://github.com/EdnilsonMonteiro/breeze-tts2-ptbr-lora-training/blob/main/docs/ESTRATEGIA-PTBR.md).
 
@@ -151,15 +154,15 @@ Na primeira geração o modelo é carregado (baixa na 1ª vez e leva ~1 min depo
 ```bash
 # Clonar uma voz (template ref_edit)
 python infer/clone_voice.py \
-  --adapter EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr \
+  --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora \
   --ref-audio ref.wav --ref-text "transcrição exata da referência" \
   --text "Texto que o modelo deve falar." --out out/clone.wav
 
 # Sonda base vs adapter em frases OOV
-python infer/probe_oov.py --adapter EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr --out out/probe
+python infer/probe_oov.py --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora --out out/probe
 
 # A/B do caminho de decode (eager vs streaming oficial)
-python infer/ab_decode.py --adapter EdnilsonMonteiro/Breeze-TTS-2-lora-ptbr --out out/ab
+python infer/ab_decode.py --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora --out out/ab
 ```
 
 `--adapter` aceita **pasta local** ou **id do Hugging Face** (baixa na hora).
@@ -171,7 +174,9 @@ Sem `--adapter`, gera com o modelo base (controle).
 
 ```
 breeze-tts/     engine oficial (submódulo pinado em ca632ce)
-core/           paths.py + loaders (e auto-download do base/adapter)
+core/           paths.py + loaders (e auto-download do base/adapter);
+                text_norm/text_blocks/adapter_scale/reference_prep = cópias dos módulos
+                compartilhados com o repo de treino (`scripts/sync_shared.py`)
 infer/          clone_voice.py, probe_oov.py, ab_decode.py
 ui/             app.py (Gradio), run.bat
 docs/           documentacao publica (ver docs/README.md)

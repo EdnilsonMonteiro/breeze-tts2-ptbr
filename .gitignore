@@ -21,3 +21,12 @@ __pycache__/
 
 # Arquivos pessoais/locais (espelham a raiz; nao publicados)
 .local/
+
+# Audio/estado pessoal (defesa extra)
+*.flac
+*.mp3
+*.m4a
+*.ogg
+*.opus
+voices.json
+ui_state.json

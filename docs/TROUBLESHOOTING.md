@@ -14,9 +14,10 @@ ocorrer, verifique se `PTBR_OUT_DIR` está sob `PTBR_ARTIFACTS`.
   e defina `HF_TOKEN` no `.env`.
 - Verifique a internet e o `repo_id` (`BREEZE_BASE_MODEL_REPO`).
 
-## Aviso: adapter "ainda nao esta publicado no Hugging Face"
+## Aviso: adapter "nao encontrado no Hugging Face"
 
-Esperado enquanto `PTBR_ADAPTER_REPO` aponta para um repo que não existe. Opções:
+Acontece quando `PTBR_ADAPTER_REPO` aponta para um repo que não existe ou que você não consegue acessar
+(confira o nome `EdnilsonMonts/Breeze-tts-2-brazillian-lora` e a internet). Opções:
 
 - use um adapter local (ver [CONFIGURATION.md](CONFIGURATION.md));
 - deixe `PTBR_ADAPTER_REPO=` vazio para não tentar baixar.
