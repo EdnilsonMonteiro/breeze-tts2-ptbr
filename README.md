@@ -9,11 +9,13 @@ treinado sobre o [Breeze TTS 2](https://github.com/breezeblue-ai/breeze-tts).
 O engine entra como **submódulo pinado** (`breeze-tts/`); o adaptador é aplicado
 via PEFT sobre o modelo base.
 
-Na **primeira execução**, o programa baixa automaticamente do Hugging Face:
-1. o **modelo base** `BreezeBlue/Breeze-TTS-2`;
-2. o **adapter LoRA** `EdnilsonMonts/Breeze-tts-2-brazillian-lora`.
+Na **primeira execução**, o programa baixa automaticamente do Hugging Face o
+**modelo base** `BreezeBlue/Breeze-TTS-2`. O **adapter LoRA** é baixado pela própria
+UI (botão *Baixar modelo…*), que explica a origem do download — ou você copia um
+checkpoint para a pasta **`adapters/`** na raiz deste repo, que é **ignorada pelo git**
+(nenhum peso vai para o repositório).
 
-> **Adaptador publicado:** [EdnilsonMonts/Breeze-tts-2-brazillian-lora](https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora) (checkpoint *r76, passo 1500*; veja o model card para dados de treino, avaliação e limites).
+> **Adaptador publicado:** [EdnilsonMonts/Breeze-tts-2-brazillian-lora](https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora/tree/main) (checkpoint *r76, passo 1500*; veja o model card para dados de treino, avaliação e limites).
 
 > **Derived from Breeze TTS 2 by BreezeBlue and licensed for research and
 > non-commercial use only.** Veja `NOTICE`; a licença do modelo está em
@@ -75,7 +77,7 @@ download é automático. Para escolher pastas/repos, copie `.env.example` → `.
 e edite:
 
 ```ini
-# Onde ficam modelo base + adapters (fora do git)
+# Onde ficam modelo base + artefatos (fora do git)
 PTBR_ARTIFACTS=/path/to/artifacts
 
 # Repos do Hugging Face (troque quando publicar o seu adapter)
@@ -88,11 +90,13 @@ PTBR_ADAPTER_REPO=EdnilsonMonts/Breeze-tts-2-brazillian-lora
 
 | Variável | Default | Para que serve |
 |---|---|---|
-| `PTBR_ARTIFACTS` | `./artifacts` | raiz de `models/`, `training/`, `adapters/` |
+| `PTBR_ARTIFACTS` | `./artifacts` | raiz de `models/`, `training/`, `ui_out/` |
 | `BREEZE_BASE_MODEL_REPO` | `BreezeBlue/Breeze-TTS-2` | modelo base no HF |
-| `PTBR_ADAPTER_REPO` | `EdnilsonMonts/Breeze-tts-2-brazillian-lora` | adapter LoRA no HF (vazio = não baixa) |
-| `PTBR_ADAPTERS_DIR` | `<training>/runs` | adapters locais de treino |
-| `PTBR_HF_ADAPTERS_DIR` | `<artifacts>/adapters` | adapters baixados do HF |
+| `PTBR_ADAPTER_REPO` | `EdnilsonMonts/Breeze-tts-2-brazillian-lora` | adapter LoRA no HF (vazio = não oferece download) |
+| `PTBR_REPO_ADAPTERS_DIR` | `<repo>/adapters` | pasta (na raiz do repo, git-ignorada) onde a UI procura/baixa adapters |
+| `PTBR_ADAPTERS_DIR` | `<PTBR_REPO_ADAPTERS_DIR>` | pasta principal de adapters (troque se guardar em outro lugar) |
+| `PTBR_TRAINING_RUNS_DIR` | `<training>/runs` | checkpoints de treino (`<run>/checkpoints/<ckpt>`) |
+| `PTBR_HF_ADAPTERS_DIR` | `<artifacts>/adapters` | adapters baixados por versões antigas (legado) |
 | `PTBR_OUT_DIR` | `<training>/ui_out` | áudio gerado pela UI |
 | `HF_TOKEN` | — | token HF (repos gated/licença) |
 
@@ -101,21 +105,35 @@ PTBR_ADAPTER_REPO=EdnilsonMonts/Breeze-tts-2-brazillian-lora
 
 ---
 
-### Usar um adapter local (sem Hugging Face)
+### Adapters LoRA: pasta `adapters/` (na raiz do repo)
 
-Se você já tem o adapter (ex.: seu checkpoint de treino), coloque em
-`<PTBR_ARTIFACTS>/adapters/<nome>/`:
+É onde a UI procura os adapters — e onde ela mesma baixa o modelo. **O conteúdo dessa
+pasta é ignorado pelo git** (`adapters/.gitignore`), então os pesos podem morar dentro
+do projeto sem risco de commit:
 
 ```
-<PTBR_ARTIFACTS>/adapters/Breeze-tts-2-brazillian-lora/
-├─ adapter_config.json
-└─ adapter_model.safetensors
+adapters/
+├─ Breeze-tts-2-brazillian-lora/     # baixado pela UI (layout plano)
+│  ├─ adapter_config.json
+│  ├─ breeze-tts-2-pt-br-lora.safetensors
+│  └─ adapter_model.safetensors      # criado automaticamente (hardlink) p/ o PEFT
+└─ r76/checkpoints/step1500/         # checkpoints do seu treino também aparecem
 ```
 
-A UI mostra esse adapter como `hf/Breeze-tts-2-brazillian-lora` e o download é pulado
-(a pasta já existe). Alternativas: apontar `PTBR_ADAPTERS_DIR` para uma pasta com
-`<run>/checkpoints/<ckpt>/adapter_config.json`, ou deixar `PTBR_ADAPTER_REPO=`
-vazio para não tentar baixar nada.
+O dropdown mostra o primeiro como `Breeze-tts-2-brazillian-lora` e o segundo como
+`r76/checkpoints/step1500`. Duas formas de preencher a pasta:
+
+1. **Pela UI** — botão *Baixar modelo de EdnilsonMonts/Breeze-tts-2-brazillian-lora*
+   (aparece só enquanto o adapter não existe): baixa de
+   <https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora/tree/main> e
+   salva em `adapters/`. Depois disso **a opção desaparece** (o adapter entra na lista).
+2. **Manual** — baixe `adapter_config.json` + o `*.safetensors` na página do repo e
+   coloque em `adapters/<nome>/`; ou copie um checkpoint do seu treino para lá.
+
+> O PEFT só carrega `adapter_model.safetensors` (ou `.bin`). Este adapter publica
+> `breeze-tts-2-pt-br-lora.safetensors`, então a UI cria `adapter_model.safetensors`
+> por **hardlink** (sem duplicar ~570 MB) — o mesmo vale para checkpoints de treino com
+> nome fora do padrão.
 
 ## Uso
 
@@ -128,7 +146,13 @@ python ui/app.py --share         # link público temporário do Gradio
 python ui/app.py --selftest      # gera 1 áudio e sai (checa a instalação)
 ```
 
-Windows também: duplo-clique em `ui/run.bat`.
+Atalhos que já usam a venv do repo:
+- **Windows**: duplo-clique em `ui\run.bat` (ou `.\ui\run.bat --port 7861`);
+- **Linux/macOS**: `./ui/run.sh` (uma vez: `chmod +x ui/run.sh`; ou `bash ui/run.sh`).
+  Usa `./venv/bin/python`; para outro interpretador, `BREEZE_PY=/caminho/python ./ui/run.sh`.
+
+Na primeira vez que a UI abre, se o adapter LoRA ainda não estiver em `adapters/`, ela
+mostra **de onde** vai baixar o modelo e oferece o botão de download.
 
 Recursos da UI:
 - **Clonagem** com áudio de referência (**limpo, 3–10 s**) + transcrição exata; a referência é
@@ -139,9 +163,14 @@ Recursos da UI:
   modo; o modo é decidido por haver (ou não) áudio + transcrição, não pela aba aberta;
 - **Texto longo**: dividido automaticamente em blocos de ≤ 10 s (o treino só viu clipes até ~10 s),
   com **N candidatos por bloco + medoid** opcional;
-- **Emoção/estilo** por *system prompt* e **CFG** (simples ou dual);
+- **Escolha do adapter LoRA** (lista `adapters/` na raiz do repo, os checkpoints de treino
+  e downloads antigos; botão *Atualizar*);
+- **Download do adapter** pelo Hugging Face dentro da UI (some quando já está baixado);
 - **Modo segmentado** (emoção por frase) e **ajuste de pausas**;
-- Escolha do **adapter LoRA** (lista os locais e os baixados; botão *Atualizar*);
+- **Emoção/estilo** por *system prompt* + **CFG** — funciona no **modelo base**
+  (instrução descritiva, no idioma do texto, CFG 3–4); os **adapters pt-BR v2/v3 não seguem
+  emoção** (treinados com instrução fixa). Medições e como remedir:
+  [docs/EMOTION.md](docs/EMOTION.md) e `scripts/measure_instruction.py`;
 - **Escala do adapter (multiplicador)**: `1,0` = como treinado (recomendado; aplicada por módulo
   e idempotente). Valores `< 1,0` **pioram** o resultado — o adapter da receita v2 (escala de treino 4,0) **não**
   está "over-steering". Detalhes e números em
@@ -165,7 +194,8 @@ python infer/probe_oov.py --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora -
 python infer/ab_decode.py --adapter EdnilsonMonts/Breeze-tts-2-brazillian-lora --out out/ab
 ```
 
-`--adapter` aceita **pasta local** ou **id do Hugging Face** (baixa na hora).
+`--adapter` aceita **pasta local** (ex.: `adapters/Breeze-tts-2-brazillian-lora`),
+**id do Hugging Face** (baixa na hora) ou `training/runs/<run>/checkpoints/<ckpt>`.
 Sem `--adapter`, gera com o modelo base (controle).
 
 ---
@@ -174,11 +204,13 @@ Sem `--adapter`, gera com o modelo base (controle).
 
 ```
 breeze-tts/     engine oficial (submódulo pinado em ca632ce)
-core/           paths.py + loaders (e auto-download do base/adapter);
+adapters/       adapters LoRA da raiz do repo (conteúdo IGNORADO pelo git)
+core/           paths.py + adapter_store.py + loaders (e auto-download do base);
                 text_norm/text_blocks/adapter_scale/reference_prep = cópias dos módulos
                 compartilhados com o repo de treino (`scripts/sync_shared.py`)
 infer/          clone_voice.py, probe_oov.py, ab_decode.py
-ui/             app.py (Gradio), run.bat
+scripts/        sync_shared.py + measure_instruction.py (mede se a instrução dirige a voz)
+ui/             app.py (Gradio), run.bat (Windows), run.sh (Linux/macOS)
 docs/           documentacao publica (ver docs/README.md)
 ```
 
@@ -192,9 +224,18 @@ docs/           documentacao publica (ver docs/README.md)
   `HF_TOKEN`.
 - **CUDA/VRAM**: feche outros processos; o caminho *eager* usa ~8 GB. Sem GPU,
   use `--selftest` para validar o ambiente (vai rodar em CPU, lento).
-- **Adapter não aparece na lista**: clique em *Atualizar*; confira
-  `PTBR_ADAPTER_REPO` e `PTBR_HF_ADAPTERS_DIR`; ou aponte `PTBR_ADAPTERS_DIR` para
-  uma pasta com `<run>/checkpoints/<ckpt>/adapter_config.json`.
+- **Adapter não aparece na lista**: clique em *Atualizar*; confira se a pasta
+  `adapters/` (na raiz do repo) tem `<nome>/adapter_config.json` + os pesos, ou se
+  `PTBR_TRAINING_RUNS_DIR` aponta para os `runs` do treino.
+- **A emoção/instrução "não faz nada"**: confira se o `cfg_scale` está em 3–4 (com 1.0 quase
+  não dirige), se a instrução está no **idioma do texto** e é **descritiva**, e se você está com
+  o **modelo base** — os adapters pt-BR v2/v3 não seguem emoção. Números medidos e a ferramenta
+  de aferição em [docs/EMOTION.md](docs/EMOTION.md).
+- **Download do adapter falha (sem internet/proxy)**: baixe `adapter_config.json` e o
+  `*.safetensors` em
+  https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora/tree/main e coloque
+  os dois arquivos em `adapters/Breeze-tts-2-brazillian-lora/` (o botão da UI some
+  sozinho e o adapter passa a aparecer no dropdown).
 
 ---
 

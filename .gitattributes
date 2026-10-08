@@ -1,5 +1,7 @@
 # Fim de linha: repositorio e working tree em LF; scripts do Windows em CRLF.
+# `*.sh` fica explicito em LF para rodar no Linux mesmo se o working tree for Windows.
 * text=auto eol=lf
+*.sh text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf

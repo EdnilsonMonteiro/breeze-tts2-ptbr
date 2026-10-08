@@ -4,13 +4,15 @@ Usa o template ref_edit (ref_audio + ref_text -> gera o texto-alvo no timbre da
 referencia). Caminho EAGER validado (T=0.9, top_k=50, sem repetition_penalty).
 
 Uso:
-  python clone_voice.py --adapter training/runs/r64_01/checkpoints/step4000 ^
+  python clone_voice.py --adapter adapters/Breeze-tts-2-brazillian-lora ^
       --ref-audio "C:\\caminho\\minha_voz.wav" ^
       --ref-text "transcricao exata do audio de referencia" ^
       --text "Texto que o modelo deve falar com a voz clonada." ^
       --out training/clone_out/my_clone.wav
 
-Sem --adapter usa o modelo base (controle). --ref-text deve ser EXATAMENTE o que
+`--adapter` aceita a pasta local do adapter (ex.: `adapters/<nome>`, a pasta do repo
+ignorada pelo git, ou `training/runs/<run>/checkpoints/<ckpt>`) ou um id do Hugging
+Face. Sem --adapter usa o modelo base (controle). --ref-text deve ser EXATAMENTE o que
 é falado no audio de referência (limpo, 3-12 s).
 """
 from __future__ import annotations
@@ -82,6 +84,7 @@ def main() -> None:
     if adapter:
         from peft import PeftModel
 
+        adapter = CB.prepare_adapter(adapter)   # nome de pesos aceito pelo PEFT
         raw = PeftModel.from_pretrained(raw, adapter)
         print(f"[clone] adapter: {adapter}", flush=True)
     raw.eval()

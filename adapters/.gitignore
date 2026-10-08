@@ -1,0 +1,8 @@
+# Pasta de adapters LoRA da RAIZ do repo (ex.: adapters/Breeze-tts-2-brazillian-lora/).
+#
+# Os pesos NUNCA vao para o git: tudo aqui dentro e ignorado, exceto estes dois
+# arquivos de controle. Assim o checkpoint pode ficar dentro da arvore do projeto
+# (a UI o encontra sozinha) sem risco de commitar centenas de MB.
+*
+!.gitignore
+!README.md

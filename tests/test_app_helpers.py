@@ -9,8 +9,8 @@ import soundfile as sf  # noqa: E402
 import app  # noqa: E402  (ui/app.py com stubs)
 
 
-def test_default_adapter_prefers_final_then_env(tmp_path, monkeypatch):
-    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+def test_default_adapter_prefers_final_then_env(workdir, monkeypatch):
+    a, b, c = workdir / "a", workdir / "b", workdir / "c"
     for d in (a, b, c):
         d.mkdir()
     os.utime(a, (100, 100))
@@ -30,6 +30,106 @@ def test_default_adapter_prefers_final_then_env(tmp_path, monkeypatch):
 def test_default_adapter_falls_back_to_base():
     app._STATE["adapter_paths"] = {}
     assert app._default_adapter_label([app.BASE_LABEL]) == app.BASE_LABEL
+
+
+# --------------------------------------------------- adapters na pasta do repo
+def _fake_adapter(d, weights="adapter_model.safetensors"):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "adapter_config.json").write_text("{}", encoding="utf-8")
+    (d / weights).write_bytes(b"0" * 32)
+    return d
+
+
+def test_refresh_adapters_finds_repo_folder_and_training_runs():
+    """A lista vem da pasta `adapters/` do repo, dos runs de treino e do legado hf/<nome>."""
+    repo_dir = app.CB.ADAPTERS_DIR
+    runs_dir = app.CB.TRAINING_RUNS_DIR
+    hf_dir = app.CB.HF_ADAPTERS_DIR
+    for d in (repo_dir, runs_dir, hf_dir):
+        if d.exists():
+            __import__("shutil").rmtree(d)
+    _fake_adapter(repo_dir / "Breeze-tts-2-brazillian-lora")
+    _fake_adapter(runs_dir / "r76" / "checkpoints" / "step1500")
+    _fake_adapter(hf_dir / "adapter-antigo")
+
+    labels = app.refresh_adapters()
+    assert labels == [
+        app.BASE_LABEL,
+        "Breeze-tts-2-brazillian-lora",        # pasta do repo (prioridade)
+        "r76/checkpoints/step1500",            # layout de treino (rotulo preservado)
+        "hf/adapter-antigo",                   # downloads antigos
+    ]
+    assert app._STATE["adapter_paths"]["Breeze-tts-2-brazillian-lora"] == str(
+        repo_dir / "Breeze-tts-2-brazillian-lora"
+    )
+    assert app._resolve_adapter_path("r76/checkpoints/step1500") == (
+        runs_dir / "r76" / "checkpoints" / "step1500"
+    )
+    # rotulo do repo -> caminho do repo (mesmo sem a varredura no estado)
+    app._STATE["adapter_paths"] = {}
+    assert app._resolve_adapter_path("Breeze-tts-2-brazillian-lora") == (
+        repo_dir / "Breeze-tts-2-brazillian-lora"
+    )
+    assert app._resolve_adapter_path("nao/existe") is None
+
+
+def test_adapter_download_state_offers_download_and_cites_source(monkeypatch):
+    monkeypatch.setattr(app.CB, "adapter_installed", lambda repo_id=None, dest=None: None)
+    missing, msg = app.adapter_download_state()
+    assert missing is True
+    assert "EdnilsonMonts/Breeze-tts-2-brazillian-lora" in msg      # diz de onde vem
+    assert app.CB.ADAPTER_REPO_URL in msg
+    assert str(app.CB.adapter_dir_for()) in msg                     # e onde fica
+
+
+def test_adapter_download_state_hides_option_when_installed(workdir, monkeypatch):
+    target = app.CB.adapter_dir_for()
+    monkeypatch.setattr(app.CB, "adapter_installed", lambda repo_id=None, dest=None: target)
+    missing, msg = app.adapter_download_state()
+    assert missing is False and "instalado" in msg and str(target) in msg
+
+
+def test_download_model_hides_button_and_selects_adapter(workdir, monkeypatch):
+    """Depois do download o botao some e o adapter entra no dropdown ja selecionado."""
+    target = _fake_adapter(app.CB.ADAPTERS_DIR / "Breeze-tts-2-brazillian-lora")
+    monkeypatch.setattr(app.CB, "download_adapter", lambda *a, **k: target)
+    monkeypatch.setattr(app.CB, "adapter_installed",
+                        lambda repo_id=None, dest=None: target if (dest or target).exists() else None)
+    monkeypatch.setattr(app, "_load_ui_state", lambda: {})
+    app.gr.update.reset_mock()
+
+    steps = list(app.download_model())
+    assert len(steps) >= 2
+    status, btn, dropdown = steps[-1]
+    assert "instalado" in status
+    assert {"visible": False} in [c.kwargs for c in app.gr.update.call_args_list]
+    assert {"visible": True} not in [c.kwargs for c in app.gr.update.call_args_list]
+    assert dropdown is not None                                     # dropdown atualizado
+
+
+def test_download_model_reports_failure_and_keeps_button(monkeypatch):
+    def boom(*_a, **_k):
+        raise RuntimeError("sem internet")
+
+    monkeypatch.setattr(app.CB, "download_adapter", boom)
+    monkeypatch.setattr(app.CB, "adapter_installed", lambda repo_id=None, dest=None: None)
+    app.gr.update.reset_mock()
+
+    steps = list(app.download_model())
+    status, btn, dropdown = steps[-1]
+    assert "Falha no download" in status and "sem internet" in status
+    assert app.CB.ADAPTER_REPO_URL in status                        # aponta o download manual
+    assert {"visible": True} in [c.kwargs for c in app.gr.update.call_args_list]
+
+
+def test_build_ui_smoke_with_and_without_download_option(monkeypatch):
+    """build_ui monta sem Gradio/GPU reais â€” pega erro de fiacao no bloco do modelo."""
+    monkeypatch.setattr(app.CB, "adapter_installed", lambda repo_id=None, dest=None: None)
+    assert app.build_ui() is not None                     # sem adapter: mostra o download
+
+    monkeypatch.setattr(app.CB, "adapter_installed",
+                        lambda repo_id=None, dest=None: app.CB.adapter_dir_for())
+    assert app.build_ui() is not None                     # com adapter: sem botao de download
 
 
 def test_generate_long_chunks_and_keeps_seed_for_single_block(monkeypatch):
@@ -56,8 +156,8 @@ def test_generate_long_no_chunk(monkeypatch):
     assert n == 1
 
 
-def test_stash_reference_copies_and_is_stable(tmp_path):
-    src = tmp_path / "in.wav"
+def test_stash_reference_copies_and_is_stable(workdir):
+    src = workdir / "in.wav"
     sf.write(str(src), np.zeros(2400, np.float32), 24000)
     p1 = app._stash_reference(str(src), "Minha Voz")
     p2 = app._stash_reference(str(src), "Minha Voz")
@@ -65,8 +165,8 @@ def test_stash_reference_copies_and_is_stable(tmp_path):
     assert p1 != str(src)
 
 
-def test_save_voice_uses_upload_when_no_path(tmp_path, monkeypatch):
-    src = tmp_path / "up.wav"
+def test_save_voice_uses_upload_when_no_path(workdir, monkeypatch):
+    src = workdir / "up.wav"
     sf.write(str(src), np.zeros(2400, np.float32), 24000)
     saved = {}
     monkeypatch.setattr(app, "_load_voices", lambda: dict(saved))
@@ -82,8 +182,8 @@ def test_save_voice_uses_upload_when_no_path(tmp_path, monkeypatch):
 
 
 def test_parse_segments():
-    segs = app.parse_segments("sad | oi\nsó texto\n# comentario\n", "Neutro")
-    assert len(segs) == 2 and segs[1] == ("Neutro", "só texto")
+    segs = app.parse_segments("sad | oi\nsÃ³ texto\n# comentario\n", "Neutro")
+    assert len(segs) == 2 and segs[1] == ("Neutro", "sÃ³ texto")
 
 
 def _fake_gen(values):

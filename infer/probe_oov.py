@@ -56,6 +56,7 @@ def main() -> None:
     if adapter:
         from peft import PeftModel
 
+        adapter = CB.prepare_adapter(adapter)   # nome de pesos aceito pelo PEFT
         raw = PeftModel.from_pretrained(raw, adapter)
         print(f"[probe] adapter: {adapter}", flush=True)
     raw.eval()

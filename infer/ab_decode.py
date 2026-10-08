@@ -55,6 +55,7 @@ def main() -> None:
         _dl = CB.ensure_adapter(repo_id=adapter)
         if _dl:
             adapter = str(_dl)
+    adapter = CB.prepare_adapter(adapter)   # nome de pesos aceito pelo PEFT
     print(f"[ab] adapter: {adapter}", flush=True)
     model = PeftModel.from_pretrained(raw, adapter)
     model.eval()

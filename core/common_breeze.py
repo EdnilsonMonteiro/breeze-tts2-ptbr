@@ -65,6 +65,7 @@ CORE_DIR = Path(__file__).resolve().parent
 if str(CORE_DIR) not in sys.path:
     sys.path.insert(0, str(CORE_DIR))
 
+import adapter_store as ADS  # noqa: E402
 import paths  # noqa: E402
 
 # O engine fica no submódulo do repo; garante o import de `breeze_infer`/`models`.
@@ -76,9 +77,17 @@ ROOT = paths.REPO
 ARTIFACTS = paths.ARTIFACTS
 CKPT = paths.CKPT
 TRAINING = paths.TRAINING
+# Adapters LoRA: pasta do repo (principal), runs de treino e o legado fora do repo.
+REPO_ADAPTERS_DIR = paths.REPO_ADAPTERS_DIR
 ADAPTERS_DIR = paths.ADAPTERS_DIR
+TRAINING_RUNS_DIR = paths.TRAINING_RUNS_DIR
 HF_ADAPTERS_DIR = paths.HF_ADAPTERS_DIR
 OUT_DIR = paths.OUT_DIR
+
+# Adapter LoRA padrao (pt-BR) publicado no Hugging Face.
+ADAPTER_REPO = paths.ADAPTER_REPO
+ADAPTER_REPO_PAGE = paths.ADAPTER_REPO_PAGE
+ADAPTER_REPO_URL = paths.ADAPTER_REPO_URL
 
 _base_ensured = False
 
@@ -113,16 +122,16 @@ def ensure_base_model() -> None:
 
 
 def ensure_adapter(repo_id: str | None = None, dest=None) -> Path | None:
-    """Baixa (best-effort) o adapter LoRA do Hugging Face. Retorna a pasta ou None."""
+    """Baixa (best-effort) o adapter LoRA do Hugging Face para a pasta do repo.
+
+    Retorna a pasta local do adapter ou None se nao deu para baixar. Quem quiser a
+    falha explicita (para mostrar na UI) deve usar `download_adapter()`.
+    """
     repo_id = repo_id if repo_id is not None else paths.ADAPTER_REPO
     if not repo_id:
         return None
-    target = Path(dest) if dest else HF_ADAPTERS_DIR / repo_id.split("/")[-1]
-    if (target / "adapter_config.json").is_file():
-        return target
     try:
-        print(f"[setup] baixando adapter {repo_id} -> {target}", flush=True)
-        _hf_download(repo_id, target)
+        return download_adapter(repo_id, dest=dest)
     except Exception as exc:  # noqa: BLE001
         msg = str(exc)
         if "404" in msg or "Repository Not Found" in msg:
@@ -132,7 +141,109 @@ def ensure_adapter(repo_id: str | None = None, dest=None) -> Path | None:
         else:
             print(f"[setup] (aviso) nao baixei o adapter {repo_id}: {msg}", flush=True)
         return None
-    return target if (target / "adapter_config.json").is_file() else None
+
+
+# --------------------------------------------------------------- adapters LoRA
+def adapter_sources() -> list[tuple[str | None, Path]]:
+    """Fontes varridas por adapters: (prefixo do rotulo, pasta), em ordem de busca.
+
+    A pasta `adapters/` da raiz do repo vem sempre primeiro; o legado
+    `HF_ADAPTERS_DIR` (downloads antigos, fora do repo) leva o prefixo `hf/`.
+    """
+    return [
+        ("hf", d) if d == HF_ADAPTERS_DIR else (None, d)
+        for d in adapter_search_dirs()
+    ]
+
+
+def adapter_search_dirs() -> list[Path]:
+    """Pastas varridas por adapters LoRA (pasta do repo, runs de treino e legado)."""
+    return paths.adapter_search_dirs()
+
+
+def find_adapters() -> dict[str, Path]:
+    """Rotulo -> pasta de cada adapter LoRA encontrado nas fontes conhecidas."""
+    return ADS.find_adapters(adapter_sources())
+
+
+def adapter_dir_for(repo_id: str | None = None) -> Path:
+    """Pasta local (dentro do repo) onde mora o adapter de `repo_id`."""
+    repo_id = repo_id if repo_id is not None else ADAPTER_REPO
+    return ADS.adapter_dir_in(REPO_ADAPTERS_DIR, repo_id or "")
+
+
+def is_adapter_installed(path) -> bool:
+    """True se a pasta tem `adapter_config.json` + pesos."""
+    return ADS.is_installed(path)
+
+
+def adapter_installed(repo_id: str | None = None, dest=None) -> Path | None:
+    """Pasta do adapter se ele ja estiver baixado/instalado; None se faltar."""
+    target = Path(dest) if dest else adapter_dir_for(repo_id)
+    return target if ADS.is_installed(target) else None
+
+
+def prepare_adapter(path) -> str:
+    """Deixa a pasta do adapter pronta para o PEFT (nome de pesos aceito) e devolve str.
+
+    Idempotente e barato; pastas que nao existem (ex.: um id do Hugging Face) passam
+    direto, sem alteracao.
+    """
+    p = Path(str(path)).expanduser()
+    if p.is_dir():
+        ADS.normalize_adapter_dir(p, log=lambda m: print(m, flush=True))
+    return str(path)
+
+
+def download_adapter(repo_id: str | None = None, dest=None, log=None, force: bool = False) -> Path:
+    """Baixa o adapter LoRA do Hugging Face para `<raiz do repo>/adapters/<nome>`.
+
+    Explica no log de ONDE o modelo esta sendo baixado (repo + destino), salva arquivo
+    por arquivo (progresso no terminal) e normaliza o nome dos pesos para o PEFT.
+    Levanta RuntimeError com mensagem clara se o download nao produzir um adapter valido.
+    """
+    import huggingface_hub as hf
+
+    repo_id = (repo_id if repo_id is not None else ADAPTER_REPO or "").strip()
+    if not repo_id:
+        raise RuntimeError("nenhum repo de adapter configurado (PTBR_ADAPTER_REPO vazio no .env)")
+    log = log or (lambda m: print(m, flush=True))
+    target = Path(dest) if dest else adapter_dir_for(repo_id)
+    if ADS.is_installed(target) and not force:
+        ADS.normalize_adapter_dir(target, log=log)
+        log(f"[adapter] ja instalado em {target} (nada a baixar)")
+        return target
+
+    target.mkdir(parents=True, exist_ok=True)
+    log(f"[adapter] baixando o modelo LoRA de '{repo_id}' (Hugging Face)")
+    log(f"[adapter] origem:  https://huggingface.co/{repo_id}/tree/main")
+    log(f"[adapter] destino: {target}")
+
+    files: list[str] = []
+    try:
+        files = [
+            f for f in hf.HfApi().list_repo_files(repo_id, token=paths.HF_TOKEN)
+            if not f.startswith(".") and not f.endswith("/")
+        ]
+    except Exception as exc:  # noqa: BLE001
+        log(f"[adapter] (aviso) nao listei os arquivos do repo ({exc}); baixando o repo inteiro")
+    if files:
+        for i, name in enumerate(files, 1):
+            log(f"[adapter] ({i}/{len(files)}) {name}")
+            hf.hf_hub_download(repo_id=repo_id, filename=name,
+                               local_dir=str(target), token=paths.HF_TOKEN)
+    else:
+        _hf_download(repo_id, target)
+
+    ADS.normalize_adapter_dir(target, log=log)
+    if not ADS.is_installed(target):
+        raise RuntimeError(
+            f"o download de '{repo_id}' terminou mas {target} nao tem "
+            f"'{ADS.CONFIG_NAME}' + pesos. Baixe manualmente em "
+            f"https://huggingface.co/{repo_id}/tree/main e coloque os arquivos nessa pasta."
+        )
+    log(f"[adapter] pronto para uso: {target}")
+    return target
 
 
 def load_text_tokenizer():

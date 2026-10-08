@@ -8,6 +8,7 @@ outputs/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_tmp/
 .vscode/
 .idea/
 
@@ -18,6 +19,9 @@ __pycache__/
 *.ckpt
 *.pt
 *.pth
+
+# Adaptadores LoRA ficam em adapters/ (na raiz do repo, para a UI achar sozinha):
+# o .gitignore DENTRO dessa pasta ignora os pesos — nenhum checkpoint vai para o git.
 
 # Arquivos pessoais/locais (espelham a raiz; nao publicados)
 .local/

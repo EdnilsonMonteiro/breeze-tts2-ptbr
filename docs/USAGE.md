@@ -9,7 +9,8 @@ python ui/app.py --share         # link público temporário (Gradio)
 python ui/app.py --selftest      # gera 1 áudio e sai (checa a instalação)
 ```
 
-Windows também: duplo-clique em `ui/run.bat`.
+Atalhos com a venv do repo: `ui\run.bat` (Windows, duplo-clique) e `./ui/run.sh`
+(Linux/macOS — `chmod +x ui/run.sh` uma vez, ou `bash ui/run.sh`).
 
 ### Recursos
 
@@ -17,11 +18,17 @@ Windows também: duplo-clique em `ui/run.bat`.
   **transcrição exata**. O modelo gera o texto-alvo no timbre da referência.
 - **Sem referência**: voz padrão do modelo + instrução de estilo.
 - **Emoção/estilo**: presets ou instrução livre (*system prompt*), reforçados
-  pelo **CFG**.
+  pelo **CFG** — veja o aviso abaixo (**os adapters pt-BR v2/v3 não seguem emoção**).
 - **Modo segmentado**: uma emoção por frase (ver abaixo).
 - **Ajuste de pausas**: redimensiona as pausas naturais (10 ms–3 s).
-- **Adapter LoRA**: escolha entre base, adapters locais de treino e baixados do
-  HF; botão *Atualizar* re-escaneia.
+- **Adapter LoRA**: a lista vem da pasta `adapters/` na raiz do repo (conteúdo
+  ignorado pelo git), dos checkpoints de treino (`<run>/checkpoints/<ckpt>`) e de
+  downloads antigos (`hf/<nome>`); botão *Atualizar* re-escaneia.
+- **Download do modelo LoRA**: se `adapters/` ainda não tiver o adapter, aparece um
+  bloco dizendo **de onde** o download vem
+  ([EdnilsonMonts/Breeze-tts-2-brazillian-lora](https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora/tree/main))
+  com o botão *Baixar modelo…*. Depois de baixado, **a opção desaparece** e o adapter
+  entra no dropdown já selecionado.
 
 ### Emoção por trecho (modo segmentado)
 
@@ -44,8 +51,28 @@ Fale como um narrador epico | No fim, tudo mudou.
   diferença fica sutil.
 - No modo clonagem, use o **dual-CFG**: `cfg_ref` (fidelidade à voz) e
   `cfg_ins` (aderência à emoção).
-- As emoções tendem a funcionar melhor com o **modelo base** do que com um
-  adaptador pt-BR treinado com instruções majoritariamente neutras.
+- **Limite medido (importante):** o **modelo base** segue instrução de verdade
+  (instrução **descritiva**, no **idioma do texto**, com **CFG ~4**), mas os
+  **adapters pt-BR v2/v3** foram treinados com uma instrução **fixa** e
+  **não seguem emoção** — trocar "neutro" por "empolgado"/"triste" muda o áudio
+  menos do que trocar a seed. Com eles, a emoção tem de vir da **referência**
+  (referência alegre → clone alegre). Números, gráficos de medição e como
+  remedir: [EMOTION.md](EMOTION.md).
+
+### Medir se a emoção funciona (em vez de confiar na impressão)
+
+```bash
+python scripts/measure_instruction.py \
+  --text "Good morning! What a wonderful day, isn't it?" \
+  --instructions "Speak clearly and naturally.|Speak with great excitement and high energy." \
+  --cfg 4 --seeds 42,43
+```
+
+Ele gera sempre o mesmo texto/seed mudando **só a instrução**, mede F0/duração/
+ritmo/energia e compara com o **piso de ruído** (mesma instrução, seed diferente),
+imprimindo um veredito (`INSTRUCAO FUNCIONA` / `EFEITO FRACO/DUVIDOSO` /
+`INSTRUCAO INERTE`). Use `--adapter` e `--ref-audio/--ref-text` para testar um
+LoRA no modo clonagem.
 
 ## Linha de comando
 

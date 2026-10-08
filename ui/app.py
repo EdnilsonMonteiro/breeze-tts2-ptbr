@@ -4,10 +4,17 @@ Roda no navegador. Carrega o modelo base uma vez, permite escolher um adapter Lo
 gerar COM voz de referencia (clonagem) ou SEM referencia, com controle de emocao/estilo
 (o "system prompt" = instrucao, igual ao modelo original) e CFG.
 
-Uso:
-  & $py lora\\ui\\app.py                 # abre em http://127.0.0.1:7860
-  & $py lora\\ui\\app.py --port 7861
-  & $py lora\\ui\\app.py --selftest      # gera 1 amostra sem abrir a UI (validacao)
+Os adapters LoRA ficam em `adapters/` NA RAIZ DESTE REPO (pasta ignorada pelo git) e
+podem ser baixados pela propria UI, de
+https://huggingface.co/EdnilsonMonts/Breeze-tts-2-brazillian-lora/tree/main.
+
+Uso (Windows):
+  .\\ui\\run.bat                        # abre em http://127.0.0.1:7860
+  .\\venv\\Scripts\\python.exe ui\\app.py --port 7861
+
+Uso (Linux/macOS):
+  ./ui/run.sh                          # abre em http://127.0.0.1:7860
+  ./venv/bin/python ui/app.py --selftest
 
 Emocao: no Breeze, o estilo/emocao vem da INSTRUCAO (texto entre <ins_bos>...</ins_eos>)
 e pode ser reforcada pelo CFG (cfg_scale>1 amplifica a instrucao). No modo clonagem com
@@ -52,6 +59,7 @@ if str(_CORE) not in sys.path:
 import common_breeze as CB  # noqa: E402
 import text_norm as TN  # noqa: E402
 import adapter_scale as AS  # noqa: E402
+import adapter_store as ADS  # noqa: E402
 import reference_prep as RP  # noqa: E402
 import text_blocks as TB  # noqa: E402
 import candidate_select as CS  # noqa: E402
@@ -154,24 +162,84 @@ def _pick_device() -> str:
 
 
 def refresh_adapters() -> list[str]:
-    """Descobre adapters locais (runs/*/checkpoints/*) e baixados do HF (hf/*)."""
-    found: dict[str, str] = {}
-    runs = CB.ADAPTERS_DIR
-    if runs.is_dir():
-        for ck in sorted(runs.glob("*/checkpoints/*")):
-            if (ck / "adapter_config.json").is_file():
-                found[f"{ck.parent.parent.name}/checkpoints/{ck.name}"] = str(ck)
-    hf = CB.HF_ADAPTERS_DIR
-    if hf.is_dir():
-        for ad in sorted(hf.iterdir()):
-            if (ad / "adapter_config.json").is_file():
-                found[f"hf/{ad.name}"] = str(ad)
-    _STATE["adapter_paths"] = found
-    return [BASE_LABEL, *found.keys()]
+    """Descobre os adapters LoRA em disco, na ordem de prioridade:
+
+    1. `adapters/` na RAIZ deste repo (pasta ignorada pelo git) — onde a UI baixa o
+       modelo do Hugging Face e onde voce pode copiar um checkpoint a mao;
+    2. `<training>/runs/<run>/checkpoints/<ckpt>/` (adapters gerados pelo treino);
+    3. `<artifacts>/adapters/<nome>/` (downloads antigos, fora do repo) — rotulo `hf/<nome>`.
+    """
+    found = ADS.find_adapters(CB.adapter_sources())
+    _STATE["adapter_paths"] = {label: str(p) for label, p in found.items()}
+    return [BASE_LABEL, *found]
 
 
 def list_adapters() -> list[str]:
     return refresh_adapters()
+
+
+# ---------------------------------------------------- download do adapter (HF)
+def adapter_download_hint() -> str:
+    """Instrucao mostrada quando o modelo ainda nao esta na pasta do repo."""
+    target = CB.adapter_dir_for()
+    page = CB.ADAPTER_REPO_PAGE or CB.ADAPTER_REPO_URL
+    return (
+        f"**O modelo será baixado de:** [{CB.ADAPTER_REPO}]({CB.ADAPTER_REPO_URL}) "
+        "— repositório oficial no Hugging Face (~570 MB).\n\n"
+        f"Ele fica em `{target}`, **dentro da pasta deste projeto**, numa pasta que o "
+        "git ignora (nenhum peso vai para o repositório). Assim que o download terminar, "
+        "esta opção desaparece e o adapter aparece na lista *Adapter LoRA (checkpoint)* "
+        "acima.\n\n"
+        "Sem internet? Baixe `adapter_config.json` e o `*.safetensors` na página "
+        f"[{CB.ADAPTER_REPO}]({page}) e coloque os dois arquivos nessa pasta — a UI "
+        "encontra sozinha (o botão também some, porque o modelo já está lá)."
+    )
+
+
+def adapter_download_state() -> tuple[bool, str]:
+    """(falta_baixar, mensagem) para o bloco de download da UI."""
+    try:
+        path = CB.adapter_installed()
+    except Exception as exc:  # noqa: BLE001
+        return True, f":warning: nao consegui verificar o adapter local ({exc})."
+    if path is not None:
+        return False, (
+            f"**Modelo LoRA instalado:** `{path}`  \n"
+            f"Origem: [{CB.ADAPTER_REPO}]({CB.ADAPTER_REPO_URL}) — "
+            "escolha-o no campo *Adapter LoRA (checkpoint)* acima."
+        )
+    return True, adapter_download_hint()
+
+
+def _label_for_path(labels: list[str], path) -> str | None:
+    """Rotulo do dropdown que aponta para `path` (None se nao estiver na lista)."""
+    return ADS.labels_for_path(labels, _STATE.get("adapter_paths", {}), path)
+
+
+def download_model():
+    """Baixa o adapter LoRA do Hugging Face para `adapters/` (generator: status ao vivo)."""
+    page = CB.ADAPTER_REPO_URL or CB.ADAPTER_REPO
+    yield (
+        f"⏳ Baixando o modelo LoRA de **{CB.ADAPTER_REPO}** (`{page}`)... "
+        "são ~570 MB; o progresso por arquivo aparece no terminal.",
+        gr.update(visible=False),
+        gr.update(),
+    )
+    try:
+        target = CB.download_adapter()
+    except Exception as exc:  # noqa: BLE001
+        yield (
+            f"❌ **Falha no download:** `{exc}`\n\n"
+            f"Você pode baixar manualmente em {page} e colocar `adapter_config.json` + "
+            f"`*.safetensors` em `{CB.adapter_dir_for()}`.",
+            gr.update(visible=True),
+            gr.update(),
+        )
+        return
+    opts = refresh_adapters()
+    label = _label_for_path(opts, target) or _default_adapter_label(opts)
+    missing, status = adapter_download_state()
+    yield status, gr.update(visible=missing), gr.update(choices=opts, value=label)
 
 
 # ------------------------------------------------------------------ vozes salvas
@@ -212,10 +280,23 @@ def _save_ui_state(**kw) -> None:
     UI_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def _adapter_mtime(label: str) -> float | None:
+def _resolve_adapter_path(label: str) -> Path | None:
+    """Pasta do adapter: a que a ultima varredura achou ou o rotulo sobre as pastas conhecidas."""
     p = _STATE.get("adapter_paths", {}).get(label)
+    if p:
+        return Path(p)
+    for prefix, base in CB.adapter_sources():
+        rel = label[len(prefix) + 1:] if (prefix and label.startswith(f"{prefix}/")) else label
+        cand = Path(base) / rel
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def _adapter_mtime(label: str) -> float | None:
+    p = _resolve_adapter_path(label)
     try:
-        return (Path(p) if p else (CB.ADAPTERS_DIR / label)).stat().st_mtime
+        return p.stat().st_mtime if p else None
     except OSError:
         return None
 
@@ -385,10 +466,16 @@ def use_adapter(label: str):
             return peft
         return raw
 
-    resolved = _STATE.get("adapter_paths", {}).get(label)
-    path = (Path(resolved) if resolved else (CB.ADAPTERS_DIR / label)).resolve()
-    if not path.is_dir():
-        raise FileNotFoundError(f"adapter nao encontrado: {path}")
+    path = _resolve_adapter_path(label)
+    if path is None or not path.is_dir():
+        raise FileNotFoundError(
+            f"adapter nao encontrado: {label}. Ele deveria estar em {CB.ADAPTERS_DIR} "
+            f"(pasta do repo, ignorada pelo git) ou em {CB.TRAINING_RUNS_DIR}. "
+            "Use o botao 'Baixar modelo do Hugging Face' ou clique em Atualizar."
+        )
+    # O repositorio publica os pesos com outro nome (breeze-tts-2-pt-br-lora.safetensors);
+    # o PEFT so carrega `adapter_model.*`, entao criamos esse nome (hardlink) se faltar.
+    CB.prepare_adapter(path)
 
     key = label
     if peft is None:
@@ -840,6 +927,16 @@ def synthesize(
     if not has_ref and adapter_label != BASE_LABEL:
         persist_line += ("  \n**Aviso:** sem referencia — adapters v2 nao foram treinados nesse modo "
                          "(so os v3 cobrem ~15 %); prefira clonar com uma referencia.")
+    # Instrucao/emocao: numeros medidos em docs/EMOTION.md (mesmo texto/seed/referencia,
+    # so a instrucao e o cfg mudam; comparado com o ruido de trocar a seed).
+    if float(cfg_scale) < 2.0:
+        persist_line += ("  \n**Dica:** com CFG ~1 a instrucao dirige pouco a voz (energia/ritmo "
+                         "quase nao mudam) — para emocao/estilo use CFG 3-4.")
+    if adapter_label != BASE_LABEL:
+        persist_line += ("  \n**Aviso:** adapters pt-BR v2/v3 foram treinados com instrucao "
+                         "FIXA e nao seguem emocao (a voz sai neutra; medido em docs/EMOTION.md). "
+                         "Para emocao: modelo base com instrucao descritiva, ou uma referencia "
+                         "que ja tenha a emocao desejada.")
     info = (
         f"**Modo:** {mode}  \n"
         f"**Adapter:** {adapter_txt}  \n"
@@ -970,6 +1067,9 @@ def build_ui() -> gr.Blocks:
     adapters = list_adapters()
     _STATE["adapter_choices"] = adapters
     default_adapter = _default_adapter_label(adapters)
+    # Se o adapter ainda nao estiver em adapters/, a UI oferece o download (e diz de
+    # onde ele vem); depois de baixado a opcao desaparece sozinha.
+    need_download, dl_message = adapter_download_state()
 
     with gr.Blocks(title="Breeze TTS 2 - LoRA PT-BR") as demo:
         gr.Markdown(
@@ -989,7 +1089,7 @@ def build_ui() -> gr.Blocks:
                     with gr.Row():
                         ref_path = gr.Textbox(
                             label="...ou caminho do arquivo de referencia",
-                            placeholder=r"C:\caminho\referencia.wav", scale=4,
+                            placeholder=str(Path.home() / "referencia.wav"), scale=4,
                         )
                         btn_tr = gr.Button("Transcrever", scale=1)
                     ref_text = gr.Textbox(
@@ -1072,10 +1172,30 @@ def build_ui() -> gr.Blocks:
                 instruction = gr.Textbox(
                     label="System prompt / instrucao (edite livremente)",
                     value=EMOTIONS["Neutro / natural"], lines=2,
+                    info="Quem segue esta instrucao e o MODELO, nao a UI: o modelo base segue bem "
+                         "(instrucao descritiva, no idioma do texto, com CFG 3-4), mas os adapters "
+                         "pt-BR v2/v3 foram treinados com instrucao FIXA e praticamente nao mudam a "
+                         "voz por emocao. Medido em docs/EMOTION.md.",
                 )
                 # .input (so acao do usuario): com .change, carregar uma voz salva disparava este evento e
                 # sobrescrevia a instrucao personalizada salva junto com a voz.
                 emotion.input(lambda e: EMOTIONS.get(e, ""), inputs=emotion, outputs=instruction)
+                with gr.Accordion("Emocao: o que funciona (medido)", open=False):
+                    gr.Markdown(
+                        "- **Modelo base** (`(base - sem adapter)`): segue instrucao de verdade. "
+                        "No teste controlado (mesmo texto/seed), *\"Speak with great excitement…\"* "
+                        "com **CFG 4** levou a F0 de 225 → 353 Hz, −35 % de duracao e +133 % de "
+                        "energia; *sussurro* saiu sem vozeamento e 10× mais baixo. Com **CFG 1** o "
+                        "efeito cai muito (F0 +37 Hz em vez de +128 Hz).\n"
+                        "- **Adapters pt-BR v2/v3** (inclui o publicado): **nao seguem emocao**. "
+                        "Foram treinados com uma unica instrucao neutra fixa (*\"Fale com clareza e "
+                        "naturalidade.\"*), entao trocar por *\"empolgado\"*/*\"triste\"* mexe no "
+                        "audio menos do que trocar a seed. Use-os pelo portugues/clonagem; a emocao "
+                        "tem de vir da **referencia** (referencia alegre clona alegre) ou de "
+                        "pos-processamento.\n"
+                        "- Detalhes, numeros e como remedir: `docs/EMOTION.md` e "
+                        "`python scripts/measure_instruction.py --help`."
+                    )
 
                 with gr.Row():
                     adapter = gr.Dropdown(
@@ -1083,6 +1203,15 @@ def build_ui() -> gr.Blocks:
                         label="Adapter LoRA (checkpoint)", scale=4,
                     )
                     refresh_btn = gr.Button("Atualizar", scale=1)
+
+                # A pasta e a `adapters/` da raiz do repo (ignorada pelo git); o bloco so
+                # aparece aberto enquanto o modelo nao estiver baixado.
+                with gr.Accordion("Modelo LoRA (pasta adapters/ do projeto)", open=need_download):
+                    dl_status = gr.Markdown(dl_message)
+                    dl_btn = gr.Button(
+                        f"Baixar modelo de {CB.ADAPTER_REPO} (Hugging Face)",
+                        variant="primary", visible=need_download,
+                    )
 
                 with gr.Accordion("Vozes salvas", open=False):
                     with gr.Row():
@@ -1111,7 +1240,9 @@ def build_ui() -> gr.Blocks:
                             "soma `p`. `1,0` = desligado; `0,9` = mais foco. Ajuste **top_k ou "
                             "top_p**, não os dois ao extremo.\n"
                             "- **CFG scale** (guidance): quanto reforçar a **instrução** (emoção/"
-                            "estilo). `1,0` = sem reforço; `3–4` = forte (recomendado p/ direção).\n"
+                            "estilo). `1,0` = sem reforço; `3–4` = forte (recomendado p/ direção). "
+                            "Com CFG 1 a instrução quase não muda a voz — medido em "
+                            "`docs/EMOTION.md`.\n"
                             "- **cfg_ref** (dual-CFG): fidelidade à **voz de referência**. Maior = "
                             "mais parecido com a referência.\n"
                             "- **cfg_ins** (dual-CFG): aderência à **instrução** (emoção). Maior = "
@@ -1199,7 +1330,9 @@ def build_ui() -> gr.Blocks:
                     "---\n**Como usar**\n"
                     "1. (Opcional) Envie a referencia + transcricao para clonar.\n"
                     "2. Digite o texto e escolha a emocao.\n"
-                    "3. Ajuste o adapter e, se quiser, o CFG em *Configuracoes avancadas*.\n"
+                    "3. Ajuste o adapter (a lista vem da pasta `adapters/` deste projeto e "
+                    "dos checkpoints de treino) e, se quiser, o CFG em *Configuracoes "
+                    "avancadas*.\n"
                     "4. Clique em **Gerar audio**.\n\n"
                     "**Emocao por trecho:** ligue *Modo segmentado* e escreva uma linha por "
                     "trecho no formato `emocao | texto`. Cada trecho e gerado com a sua "
@@ -1276,9 +1409,14 @@ def build_ui() -> gr.Blocks:
         ref_audio.stop_recording(lambda _a: "", inputs=[ref_audio], outputs=[ref_path])
 
         def _refresh_init():
-            """No load: define o valor padrao (ultimo usado / mais recente)."""
+            """No load: define o valor padrao e refaz o estado do bloco de download."""
             opts = refresh_adapters()
-            return gr.update(choices=opts, value=_default_adapter_label(opts))
+            missing, msg = adapter_download_state()
+            return (
+                gr.update(choices=opts, value=_default_adapter_label(opts)),
+                gr.update(value=msg),
+                gr.update(visible=missing),
+            )
 
         def _refresh_keep(current=None):
             """No botao Atualizar: mantem a escolha atual se ela ainda existir."""
@@ -1286,9 +1424,10 @@ def build_ui() -> gr.Blocks:
             val = current if current in opts else _default_adapter_label(opts)
             return gr.update(choices=opts, value=val)
 
-        demo.load(_refresh_init, outputs=[adapter])
+        demo.load(_refresh_init, outputs=[adapter, dl_status, dl_btn])
         demo.load(lambda: gr.update(choices=sorted(_load_voices())), outputs=[voice_pick])
         refresh_btn.click(_refresh_keep, inputs=[adapter], outputs=[adapter])
+        dl_btn.click(download_model, outputs=[dl_status, dl_btn, adapter])
 
         save_voice_btn.click(
             save_voice,
@@ -1326,14 +1465,24 @@ def main() -> None:
         print(info)
         return
 
-    # Primeiro uso: baixa o adapter LoRA do Hugging Face (best-effort).
-    CB.ensure_adapter()
+    # Nada e baixado automaticamente: se o adapter LoRA ainda nao estiver em adapters/,
+    # a propria UI mostra o botao (com a origem do download) ou voce copia o checkpoint
+    # para a pasta. Assim o usuario decide se/ quando baixar ~570 MB.
+    if CB.adapter_installed() is None:
+        print(
+            f"[ui] adapter LoRA '{CB.ADAPTER_REPO}' ainda nao esta em {CB.ADAPTERS_DIR}.\n"
+            f"[ui] use o botao 'Baixar modelo de {CB.ADAPTER_REPO}' na UI, ou baixe de "
+            f"{CB.ADAPTER_REPO_URL} e coloque os arquivos nessa pasta.",
+            flush=True,
+        )
 
     demo = build_ui()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     # Os audios sao salvos nos artefatos (fora do cwd); o Gradio exige liberar essas
     # pastas em allowed_paths, senao ele recusa mover o arquivo para o cache.
-    allowed = sorted({str(OUT_DIR), str(CB.TRAINING), str(CB.ADAPTERS_DIR)})
+    allowed = sorted(
+        {str(OUT_DIR), str(CB.TRAINING), *(str(d) for d in CB.adapter_search_dirs())}
+    )
     demo.queue().launch(
         server_name=args.host, server_port=args.port,
         share=args.share, inbrowser=not args.no_browser,
